@@ -3,6 +3,11 @@
   "address": "127.0.0.1",
   "port": 11213,
   "debug": false,
+  "expectation" : {
+    "keyMaxSize": 30,
+    "valueMaxSize": 800,
+    "cmdGetBatchSize": 1000
+  },
   "sophiaParams": [
     {
       "key": "sophia.path",
