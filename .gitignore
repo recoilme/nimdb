@@ -1,0 +1,11 @@
+sophia
+nimcache
+.idea/
+.DS_Store
+server
+pudgeclient
+t/
+.vscode/
+test
+pudge
+nimsuggest.log

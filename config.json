@@ -1,0 +1,40 @@
+
+{
+  "address": "127.0.0.1",
+  "port": 11213,
+  "debug": false,
+  "sophiaParams": [
+    {
+      "key": "sophia.path",
+      "val": "./sophia"
+    },
+    {
+      "key": "db",
+      "val": "db"
+    },
+    {
+      "key": "backup.path",
+      "val": "backup"
+    },
+    {
+      "key": "db.db.compression",
+      "val": "none"
+    },
+    {
+      "key": "scheduler.threads",
+      "val": 5
+    },
+    {
+      "key": "db.db.mmap",
+      "val": 1
+    },
+    {
+      "key": "db.db.expire",
+      "val": 0
+    },
+    {
+      "key": "db.db.compaction.expire_period",
+      "val": 36000
+    }
+  ]
+}
