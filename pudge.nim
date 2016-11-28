@@ -80,7 +80,9 @@ type
 # enums
   Cmd = enum
     cmdSet = "set",
+    cmdAdd = "add",
     cmdGet = "get",
+    cmdDelete = "delete",
     cmdDie = "die",
     cmdStat = "stat",
     cmdEcho = "echo",
@@ -95,6 +97,8 @@ type
     error = "ERROR",
     theEnd = "END",
     value = "VALUE"
+    deleted = "DELETED"
+    notFound = "NOT_FOUND"  
   
   Engine = enum
     engMemory = "MEMORY",
@@ -120,7 +124,6 @@ const GET_CMD_ENDING = $Status.theEnd & NL
 #sophia vars
 var env : pointer
 var db : pointer
-var rc : cint
 var L: Lock
 
 proc newServer(): Server =
@@ -145,7 +148,7 @@ proc sendStatus(client: Socket,status: Status):void=
   client.send($status & NL)
 
 
-proc processSet(client: Socket,params: seq[string]):void=
+proc processSet(client: Socket,params: seq[string], asAdd: bool):void=
   ## set command example
   ## set key 0 0 5\10\13value\10\13
   ## Response: STORED or ERROR
@@ -177,10 +180,19 @@ proc processSet(client: Socket,params: seq[string]):void=
       if client != nil :
         sendStatus(client, Status.stored)
     of Engine.engSophia:
-      let o = document(db)
+      var o = document(db)
       discard o.setstring("key".cstring, addr key[0], (key.len).cint)
+      if asAdd:
+        var res = db.get(o)
+        if res != nil:
+          sendStatus(client, Status.notStored)
+          discard destroy(res)
+          return
+        else:
+          o = document(db) # recreate document
+          discard o.setstring("key".cstring, addr key[0], (key.len).cint)
       discard o.setstring("value".cstring, addr val[0], (val.len).cint)
-      rc = db.set(o);
+      var rc = db.set(o);
       if (rc == -1):
         debug("Sophia write error for " & key)
         sendStatus(client, Status.notStored)
@@ -263,6 +275,51 @@ proc processGet(client: Socket,params: seq[string]):void=
 
   discard client.send(buffer, bufferPos)
   dealloc(buffer)
+
+proc processDelete(client: Socket, params: seq[string]): void =
+  ## delete key [noreply]
+  ## response variants:
+  ## DELETED
+  ## NOT_FOUND
+  if params.len < 2 or params.len > 3:
+    debug("wrong params for delete command")
+    sendStatus(client, Status.error)
+    return
+
+  var key = params[1]
+  var noreply = false
+  if params.len == 3:
+    if params[2] == "noreply":
+      noreply = true
+    else:
+      sendStatus(client, Status.error)
+      return 
+
+  case CUR_ENGINE:
+    of Engine.engMemory:
+      # TODO: remove from memory
+      if not noreply:
+        sendStatus(client, Status.notFound)
+
+    of Engine.engSophia:
+      if not noreply:
+        var o = document(db)
+        discard o.setstring("key".cstring, addr key[0], (key.len).cint)
+        var res = db.get(o)
+        if res == nil:
+          sendStatus(client, Status.notFound)
+          return
+        else:
+          discard destroy(res)
+
+      var o = document(db)
+      discard o.setstring("key".cstring, addr key[0], (key.len).cint)
+      var res = db.delete(o)
+      if not noreply:
+        if res == 0:
+          sendStatus(client, Status.deleted)
+        else:
+          sendStatus(client, Status.error)
 
 proc processStat(server:Server, client: Socket):void =
   ## example stat
@@ -403,9 +460,13 @@ proc parseLine(server: Server, client: Socket, line: string):bool =
   # debug(line)
   case command:
     of $Cmd.cmdSet:
-      processSet(client,params)
+      processSet(client, params, false)
+    of $Cmd.cmdAdd:
+      processSet(client, params, true)
     of $Cmd.cmdGet:
       processGet(client,params)
+    of $Cmd.cmdDelete:
+      processDelete(client, params)  
     of $Cmd.cmdEcho:
       client.send(line & NL)
     of $Cmd.cmdStat:
@@ -491,7 +552,7 @@ proc initVars(conf:Config):void =
       db = env.getobject("db.db")
 
       # Open the environment
-      rc = env.open()
+      var rc = env.open()
       if (rc == -1):  errorExit()
     else:
       echo "Engine unknown"
