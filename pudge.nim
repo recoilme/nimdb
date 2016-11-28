@@ -62,14 +62,14 @@ type
     clients : seq[Socket]
     subscribers   : seq[Socket]
 
-  SophiaParams = ref object
+  SophiaParams = object
     key : string
     val : string
 
-  Config* = ref object
+  Config* = object
     address : string
     port    : int32
-    debug   : bool
+    debug*   : bool
     sophiaParams: seq[SophiaParams]
 # enums
   Cmd = enum
@@ -226,7 +226,7 @@ proc processGet(client: Socket,params: seq[string]):void=
           discard destroy(o)
   client.send(content & $Status.theEnd & NL)
 
-proc processStat(server: Server, client: Socket):void =
+proc processStat(server:Server, client: Socket):void =
   ## example stat
   var len:int
   len = server.clients.len

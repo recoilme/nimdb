@@ -13,14 +13,14 @@ proc runServer(conf:Config):Future[void] {.async.} =
 suite "test suite for pudge":
   setup:
     let result = 4
-    let size = 100000
-    const bytes = 512
+    let size = 10000000
+    const bytes = 800
     const content = repeatStr(bytes, "t")
-    var conf:Config = readCfg()
+    var conf: Config = readCfg()
+
+    #echo repr(c)
     # run server in background thread
     #asyncCheck runServer(conf)# сучка консоль захватывает(
-
-    sleep(1000)
 
   
   test "2 + 2 = 4":
