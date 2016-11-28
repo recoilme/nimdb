@@ -4,6 +4,8 @@ Pudge Db implements a high-level cross-platform sockets interface to sophia db.
 
 Pudge writen in Nim and uses Sophia engine inside.
 
+Pudge is fast, effective and simple.
+
 ## Build
 [Install Nim](http://nim-lang.org)
 
