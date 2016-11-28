@@ -89,7 +89,8 @@ type
     cmdQuit = "quit",
     cmdUnknown = "unknown",
     cmdEnv = "env",
-    cmdSub = "sub"
+    cmdSub = "sub",
+    cmdKeys = "keys"
 
   Status = enum
     stored = "STORED",
@@ -452,6 +453,46 @@ proc processSub*(client: Socket,params: seq[string]):void =
       res = $Status.error
   client.send($res & NL)
 
+proc processKeys(client: Socket, params: seq[string]): void = 
+  ## Simplified analogue of Redis KEYS command. Wildcard required.
+  ## For example get all db keys:
+  ## KEYS * 
+  ## firstkey
+  ## secondkey
+  ## ...
+  ## lastkey
+  ## END
+  ##
+  ## Get all keys by prefix (only prefix supported unlike of Redis):
+  ## KEYS foo*
+  ## foo
+  ## foobar
+  ## foobaz
+  ## END
+  if params.len != 2:
+    sendStatus(client, Status.error)
+    return
+  var pattern = params[1]
+  if pattern.len == 0 or not(pattern[pattern.len - 1] == '*'):
+    sendStatus(client, Status.error)
+    return
+  pattern = pattern.substr(0, pattern.len - 2)
+
+  var cursor = cursor(env);
+  var o = document(db)
+  if pattern.len > 0:
+    discard o.setstring("prefix".cstring, addr pattern[0], (pattern.len).cint)
+  o = cursor.get(o)  
+  while o != nil:
+    var size: cint
+    var keyPtr = o.getstring("key".cstring, addr size)
+    var key = $(cast[ptr array[0,char]](keyPtr)[])
+    key = key.substr(0, size - 1)
+    client.send(key & NL)
+    o = cursor.get(o)
+  sendStatus(client, Status.theEnd)
+  discard destroy(cursor)
+
 proc parseLine(server: Server, client: Socket, line: string):bool =
   result = false
   let
@@ -486,6 +527,8 @@ proc parseLine(server: Server, client: Socket, line: string):bool =
       sendStatus(client,Status.error)
     of $Cmd.cmdsub:
       processSub(client, params)
+    of $Cmd.cmdKeys:
+      processKeys(client, params)
     else:
       debug("Unknown command: " & command)
       sendStatus(client,Status.error)
