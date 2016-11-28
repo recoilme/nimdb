@@ -66,11 +66,17 @@ type
     key : string
     val : string
 
+  Expectation = ref object
+    keyMaxSize      : int32
+    valueMaxSize    : int32
+    cmdGetBatchSize : int32
+
   Config* = object
     address : string
     port    : int32
     debug*   : bool
     sophiaParams: seq[SophiaParams]
+    expectation: Expectation
 # enums
   Cmd = enum
     cmdSet = "set",
@@ -97,6 +103,9 @@ type
 # vars
 var DEBUG : bool
 var die : bool# global var?
+var keyMaxSize: int = 30
+var valueMaxSize: int = 800
+var cmdGetBatchSize: int = 1000
 
 
 #Global data
@@ -106,6 +115,7 @@ var die : bool# global var?
 #contants
 const NL = chr(13) & chr(10)
 const CUR_ENGINE = Engine.engSophia
+const GET_CMD_ENDING = $Status.theEnd & NL
 
 #sophia vars
 var env : pointer
@@ -196,11 +206,13 @@ proc processGet(client: Socket,params: seq[string]):void=
     debug("wrong params for get command")
     sendStatus(client, Status.error)
     return
-  var content = TaintedString""
+  var bufferLen = (20 + keyMaxSize + valueMaxSize) * min(cmdGetBatchSize, params.len - 1) 
+  var bufferPos = 0 
+  var buffer = cast[ptr array[0, char]](createU(char, bufferLen))
   for i in 1..(params.len - 1):
-    if i mod 100 == 0:
-      client.send(content)
-      content = TaintedString""
+    if i mod cmdGetBatchSize == 0:
+      discard client.send(buffer, bufferPos)
+      bufferPos = 0
     var key = params[i]
     var val:string = nil
     case CUR_ENGINE:
@@ -209,7 +221,14 @@ proc processGet(client: Socket,params: seq[string]):void=
           #if gdata.hasKey(key):
             #val = gdata[key]
         if val != nil:
-          content.add($Status.value & " " & $key & " 0 " & $val.len & NL & $val & NL)
+          # TODO: rewrite using copyMem
+          let s = $Status.value & " " & $key & " 0 " & $val.len & NL & $val & NL
+          for c in s:
+            buffer[bufferPos] = c
+            inc(bufferPos)
+            if (bufferPos >= bufferLen):
+              bufferLen = bufferLen * 2
+              buffer = resize(buffer, bufferLen)
 
       of Engine.engSophia:
         var o = document(db)
@@ -218,13 +237,32 @@ proc processGet(client: Socket,params: seq[string]):void=
         if (o != nil):
           var size:cint = 0
           var valPointer = cast[ptr array[0,char]](o.getstring("value".cstring, addr size))
-          var val:string = newStringOfCap(size)
-          for i in 0..(size - 1):
-            val.add(valPointer[i])
-          #все дело в волшебных пузырьках, отправлем все строки одним пакетом
-          content.add($Status.value & " " & $key & " 0 " & $(val.len) & NL & val & NL)
+
+          if (bufferLen - bufferPos < (size + key.len + 20)):
+            bufferLen = bufferLen * 2
+            buffer = resize(buffer, bufferLen)
+
+          var header = $Status.value & " " & $key & " 0 " & $size & NL
+          copyMem(addr buffer[bufferPos], header.cstring, header.len)
+          bufferPos += header.len
+
+          copyMem(addr buffer[bufferPos], valPointer, size)
+          bufferPos += size
+
+          copyMem(addr buffer[bufferPos], NL.cstring, NL.len)
+          bufferPos += NL.len
+
           discard destroy(o)
-  client.send(content & $Status.theEnd & NL)
+
+  if bufferLen - bufferPos < GET_CMD_ENDING.len:
+      bufferLen = bufferLen * 2
+      buffer = resize(buffer, bufferLen)
+
+  copyMem(addr buffer[bufferPos], GET_CMD_ENDING.cstring, GET_CMD_ENDING.len)
+  bufferPos += GET_CMD_ENDING.len
+
+  discard client.send(buffer, bufferPos)
+  dealloc(buffer)
 
 proc processStat(server:Server, client: Socket):void =
   ## example stat
@@ -424,6 +462,9 @@ proc initVars(conf:Config):void =
   die = false
   echo "Engine:" & $CUR_ENGINE
   DEBUG = conf.debug
+  keyMaxSize = conf.expectation.keyMaxSize
+  valueMaxSize = conf.expectation.valueMaxSize
+  cmdGetBatchSize = conf.expectation.cmdGetBatchSize
   case CUR_ENGINE:
     of Engine.engMemory:
       debug("MEMORY")
