@@ -397,9 +397,9 @@ proc processEnv*(client: Socket,params: seq[string]):void =
         if params.len<4:
           res = $Status.error
         else:
-          var intparam:int
+          var intparam:clonglong
           try:
-            intparam = parseInt(params[3])
+            intparam = parseBiggestInt(params[3]).clonglong
             res = $(env.setint(params[2],intparam))
           except:
             res = $Status.error
@@ -587,7 +587,7 @@ proc initVars(conf:Config):void =
         except:
           intVal = -1
         if intVal >= 0:
-          echo env.setint(($p.key).cstring, intVal.cint)
+          echo env.setint(($p.key).cstring, intVal.clonglong)
         else:
           echo env.setstring(($p.key).cstring, ($p.val).cstring, 0)
 
