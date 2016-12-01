@@ -109,7 +109,7 @@ type
 var DEBUG : bool
 var die : bool# global var?
 var keyMaxSize: int = 30
-var valueMaxSize: int = 800
+var valueMaxSize: int = 2000
 var cmdGetBatchSize: int = 1000
 
 
