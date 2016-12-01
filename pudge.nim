@@ -251,8 +251,9 @@ proc processGet(client: Socket,params: seq[string]):void=
           var size:cint = 0
           var valPointer = cast[ptr array[0,char]](o.getstring("value".cstring, addr size))
 
-          if (bufferLen - bufferPos < (size + key.len + 20)):
-            bufferLen = bufferLen * 2
+          let diff = (size + key.len + 20) - (bufferLen - bufferPos)
+          if diff > 0:
+            bufferLen = max(bufferLen * 2, bufferLen + diff)
             buffer = resize(buffer, bufferLen)
 
           var header = $Status.value & " " & $key & " 0 " & $size & NL
@@ -267,8 +268,9 @@ proc processGet(client: Socket,params: seq[string]):void=
 
           discard destroy(o)
 
-  if bufferLen - bufferPos < GET_CMD_ENDING.len:
-      bufferLen = bufferLen * 2
+  let diff = GET_CMD_ENDING.len - (bufferLen - bufferPos)
+  if diff > 0:
+      bufferLen = bufferLen + diff
       buffer = resize(buffer, bufferLen)
 
   copyMem(addr buffer[bufferPos], GET_CMD_ENDING.cstring, GET_CMD_ENDING.len)
