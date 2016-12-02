@@ -53,7 +53,8 @@ import
   nativesockets,
   threadpool,
   locks,
-  pudgeclient
+  pudgeclient,
+  parseopt
 
 # types
 type 
@@ -149,16 +150,29 @@ proc sendStatus(client: Socket,status: Status):void=
   client.send($status & NL)
 
 
-proc processSet(client: Socket,params: seq[string], asAdd: bool):void=
+proc processSet(server: Server, client: Socket, params: seq[string], asAdd: bool):void=
   ## set command example
   ## set key 0 0 5\10\13value\10\13
   ## Response: STORED or ERROR
+  ## 
+  ## In addition to standard memcached protocol, this command supports optional 
+  ## "noreply" argument for replication purpose:
+  ## set key 0 0 5 noreply\10\13value\10\13
+  ## <nothing responds>
   if params.len<5:
     debug("wrong params for set command")
     sendStatus(client, Status.notStored)
     return
   var key:string = params[1]
   var size:int
+  var noreply = false
+  if params.len == 6:
+    if params[5] == "noreply":
+      noreply = true
+    else:
+      sendStatus(client, Status.error)
+      return  
+
   try:
     size = parseInt(params[4])
   except:
@@ -196,13 +210,15 @@ proc processSet(client: Socket,params: seq[string], asAdd: bool):void=
       var rc = db.set(o);
       if (rc == -1):
         debug("Sophia write error for " & key)
-        sendStatus(client, Status.notStored)
+        if not noreply:
+          sendStatus(client, Status.notStored)
       else:
-        sendStatus(client, Status.stored)
+        if not noreply:
+          sendStatus(client, Status.stored)
         #if server has subscribed servers - send set to it
-        #if server.subscribers.len > 0:
-          #for sub in server.subscribers:
-            #discard set(sub,key,val)
+        if server.subscribers.len > 0:
+          for sub in server.subscribers:
+            discard set(sub, key, val, true)
     else:
       if client != nil:
         sendStatus(client, Status.notStored)
@@ -279,7 +295,7 @@ proc processGet(client: Socket,params: seq[string]):void=
   discard client.send(buffer, bufferPos)
   dealloc(buffer)
 
-proc processDelete(client: Socket, params: seq[string]): void =
+proc processDelete(server: Server, client: Socket, params: seq[string]): void =
   ## delete key [noreply]
   ## response variants:
   ## DELETED
@@ -318,6 +334,11 @@ proc processDelete(client: Socket, params: seq[string]): void =
       var o = document(db)
       discard o.setstring("key".cstring, addr key[0], (key.len).cint)
       var res = db.delete(o)
+
+      if server.subscribers.len > 0:
+        for sub in server.subscribers:
+          discard delete(sub, key, true)
+
       if not noreply:
         if res == 0:
           sendStatus(client, Status.deleted)
@@ -416,7 +437,7 @@ proc processEnv*(client: Socket,params: seq[string]):void =
   client.send($res & NL)
 
 #sub 127.0.0.1 11214
-proc processSub*(client: Socket,params: seq[string]):void =
+proc processSub*(server: Server, client: Socket,params: seq[string]):void =
   ## command for subscribe one server for succesful set command on another server For example you have 2 servers
   ##
   ## .. code-block:: Nim
@@ -445,7 +466,7 @@ proc processSub*(client: Socket,params: seq[string]):void =
       debug("trying add subscriber on address:" & address & " port:" & $intVal)
       try:
         var subscriber: Socket = newClient(address, intVal)
-        #server.subscribers.add(socket)
+        server.subscribers.add(subscriber)
         res = "0"
       except:
         debug("error connect")
@@ -503,13 +524,13 @@ proc parseLine(server: Server, client: Socket, line: string):bool =
   # debug(line)
   case command:
     of $Cmd.cmdSet:
-      processSet(client, params, false)
+      processSet(server, client, params, false)
     of $Cmd.cmdAdd:
-      processSet(client, params, true)
+      processSet(server, client, params, true)
     of $Cmd.cmdGet:
       processGet(client,params)
     of $Cmd.cmdDelete:
-      processDelete(client, params)  
+      processDelete(server, client, params)  
     of $Cmd.cmdEcho:
       client.send(line & NL)
     of $Cmd.cmdStat:
@@ -528,7 +549,7 @@ proc parseLine(server: Server, client: Socket, line: string):bool =
       debug("Wrong protocol, line: " & line)
       sendStatus(client,Status.error)
     of $Cmd.cmdsub:
-      processSub(client, params)
+      processSub(server, client, params)
     of $Cmd.cmdKeys:
       processKeys(client, params)
     else:
@@ -645,8 +666,23 @@ proc readCfg*():Config  =
   ##        "val": 36000
   ##      }
   ##    ]
-  ##    }  
-  var s = newFileStream("config.json")
+  ##    }
+  var configFilepath = "config.json"
+  for kind, key, val in getopt():
+    case kind
+    of cmdArgument:
+      discard
+    of cmdLongOption, cmdShortOption:
+      case key
+      of "config", "c":
+        configFilepath = val
+      else:
+        discard
+    else:
+      discard
+
+  echo "Read configuration from: " & configFilepath
+  var s = newFileStream(configFilepath)
   var config:Config
   if not isNil(s):
     load(s, config)
