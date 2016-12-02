@@ -43,7 +43,7 @@ proc newClient*(host: string = "127.0.0.1", port: int = 11213): Socket =
   return result
 
 
-proc set*(socket: Socket, key:string, val:string):bool =
+proc set*(socket: Socket, key:string, val:string, noreply: bool = false):bool =
   ##
   ## .. code-block:: Nim
   ##
@@ -52,9 +52,30 @@ proc set*(socket: Socket, key:string, val:string):bool =
   ##    echo "STORED"
   ##  else:
   ##    echo "NOT STORED"
-  socket.send("set " & key & " 0 0 " & $val.len & NL & val & NL)
-  let res = socket.recvLine()
-  return res == "STORED"
+  let message = 
+    if noreply:
+      "set " & key & " 0 0 " & $val.len & " noreply" & NL & val & NL
+    else:
+      "set " & key & " 0 0 " & $val.len & NL & val & NL    
+  socket.send(message)
+  if noreply:
+    return true
+  else:  
+    let res = socket.recvLine()
+    return res == "STORED"
+
+proc delete*(socket: Socket, key: string, noreply: bool = false): bool = 
+  let message = 
+    if noreply:
+      "delete " & key & " noreply" & NL
+    else:  
+      "delete " & key & NL
+  socket.send(message)
+  if noreply:
+    return true
+  else:  
+    let res = socket.recvLine()
+    return res == "DELETED"
 
 proc get*(socket: Socket, key:string):string  =
   ##
