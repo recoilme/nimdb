@@ -67,6 +67,7 @@ type
     socket: Socket
     address: string
     port: int
+    retryCooldown: int
 
   # every connection has it's personal context
   Context = ref object
@@ -143,20 +144,29 @@ var L: Lock
 
 proc processSubscribers(context: Context, process: proc(s: Socket): int) =
   if context.subscribers.len > 0:
-    var forRecreate: seq[int]
-    for i, sub in context.subscribers:
-      var res = process(sub.socket)
+    var forRecreate: seq[Subscriber]
+    for sub in context.subscribers:
+      var res = -1
+      if not sub.socket.isNil:
+        res = process(sub.socket)
       if res < 0:
         if forRecreate.isNil:
           forRecreate = @[]
-        forRecreate.add(i)
+        forRecreate.add(sub)
     if not forRecreate.isNil:
-      # TODO: delayed recreation - prevent permanent tries when replica is down for a long time
-      for i in forRecreate:
-          var s = context.subscribers[i].addr
+      for s in forRecreate:
+        if s.retryCooldown > 0 and cast[int](getTime()) < s.retryCooldown:
+          continue
+        s.retryCooldown = 0
+        if not s.socket.isNil:
           s.socket.close()
+          s.socket = nil
+        try:
           var socket: Socket = newClient(s.address, s.port)
-          s.socket = socket
+          discard process(socket) # TODO: do something in case of sending failure (res < 0)
+          s.socket = socket  
+        except IOError:
+          s.retryCooldown = cast[int](getTime()) + 10 # looks like a replica is down, delay next try
 
 proc newServer(): Server =
   ## Constructor for creating a new ``Server``.
@@ -489,7 +499,7 @@ proc processSub*(context: Context, client: Socket,params: seq[string]):void =
       debug("trying add subscriber on address:" & address & " port:" & $intVal)
       try:
         var socket: Socket = newClient(address, intVal)
-        var subscriber = Subscriber(socket: socket, address: address, port: intVal)
+        var subscriber = Subscriber(socket: socket, address: address, port: intVal, retryCooldown: 0)
         context.subscribers.add(subscriber)
         res = "0"
       except:
@@ -586,7 +596,7 @@ proc processClient(server: Server, client: Socket) =
   try:
     if replicationAddress[].len > 0 and replicationPort > 0:
       var socket: Socket = newClient(replicationAddress[], replicationPort)
-      var subscriber = Subscriber(socket: socket, address: replicationAddress[], port: replicationPort)
+      var subscriber = Subscriber(socket: socket, address: replicationAddress[], port: replicationPort, retryCooldown: 0)
       context.subscribers.add(subscriber)
   except:
     debug("error connect to repica " & replicationAddress[] & ":" & $replicationPort)
