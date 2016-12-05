@@ -62,7 +62,15 @@ type
   Server = ref object
     socket  : Socket
     clients : seq[Socket]
-    subscribers   : seq[Socket]
+
+  Subscriber = ref object
+    socket: Socket
+    address: string
+    port: int
+
+  # every connection has it's personal context
+  Context = ref object
+    subscribers   : seq[Subscriber]
 
   SophiaParams = object
     key : string
@@ -133,28 +141,26 @@ var env : pointer
 var db : pointer
 var L: Lock
 
-proc processSubscribers(server: Server, process: proc(s: Socket): int) =
-  if server.subscribers.len > 0:
-    var forDelete: seq[int]
-    for i, sub in server.subscribers:
-      var res = process(sub)
+proc processSubscribers(context: Context, process: proc(s: Socket): int) =
+  if context.subscribers.len > 0:
+    var forRecreate: seq[int]
+    for i, sub in context.subscribers:
+      var res = process(sub.socket)
       if res < 0:
-        if forDelete.isNil:
-          forDelete = @[]
-        forDelete.add(i)
-    if not forDelete.isNil:
-      if forDelete.len == 1: # most common case
-        server.subscribers.del(forDelete[0])
-      else:
-        var deletedCount = 0
-        for i in forDelete:
-          server.subscribers.delete(i - deletedCount)
-          deletedCount += 1
-     # TODO: recreate deleted subscribers
+        if forRecreate.isNil:
+          forRecreate = @[]
+        forRecreate.add(i)
+    if not forRecreate.isNil:
+      # TODO: delayed recreation - prevent permanent tries when replica is down for a long time
+      for i in forRecreate:
+          var s = context.subscribers[i].addr
+          s.socket.close()
+          var socket: Socket = newClient(s.address, s.port)
+          s.socket = socket
 
 proc newServer(): Server =
   ## Constructor for creating a new ``Server``.
-  Server(socket: newSocket(), clients: @[], subscribers: @[])
+  Server(socket: newSocket(), clients: @[])
 
 
 proc debug(msg:string) =
@@ -163,20 +169,16 @@ proc debug(msg:string) =
     echo $msg
     release(L)
 
-proc closeClient(server: Server, client: Socket) =
+proc closeClient(context: Context, client: Socket) =
   client.close()
-  for i, c in server.clients:
-    if c == client:
-      server.clients.del(i)#is it GC safe? not sure..
-      break
-  for s in server.subscribers:
-    s.close()
+  for s in context.subscribers:
+    s.socket.close()
 
 proc sendStatus(client: Socket,status: Status):void=
   client.send($status & NL)
 
 
-proc processSet(server: Server, client: Socket, params: seq[string], asAdd: bool):void=
+proc processSet(context: Context, client: Socket, params: seq[string], asAdd: bool):void=
   ## set command example
   ## set key 0 0 5\10\13value\10\13
   ## Response: STORED or ERROR
@@ -241,7 +243,7 @@ proc processSet(server: Server, client: Socket, params: seq[string], asAdd: bool
       else:
         if not noreply:
           sendStatus(client, Status.stored)
-        processSubscribers(server, proc(s: Socket): int = setNoreply(s, key, val))
+        processSubscribers(context, proc(s: Socket): int = setNoreply(s, key, val))
     else:
       if client != nil:
         sendStatus(client, Status.notStored)
@@ -318,7 +320,7 @@ proc processGet(client: Socket,params: seq[string]):void=
   discard client.send(buffer, bufferPos)
   dealloc(buffer)
 
-proc processDelete(server: Server, client: Socket, params: seq[string]): void =
+proc processDelete(context: Context, client: Socket, params: seq[string]): void =
   ## delete key [noreply]
   ## response variants:
   ## DELETED
@@ -358,7 +360,7 @@ proc processDelete(server: Server, client: Socket, params: seq[string]): void =
       discard o.setstring("key".cstring, addr key[0], (key.len).cint)
       var res = db.delete(o)
 
-      processSubscribers(server, proc(s: Socket): int = deleteNoreply(s, key))
+      processSubscribers(context, proc(s: Socket): int = deleteNoreply(s, key))
 
       if not noreply:
         if res == 0:
@@ -366,12 +368,12 @@ proc processDelete(server: Server, client: Socket, params: seq[string]): void =
         else:
           sendStatus(client, Status.error)
 
-proc processStat(server:Server, client: Socket):void =
+proc processStat(server: Server, context:Context, client: Socket):void =
   ## example stat
   var len:int
   len = server.clients.len
   client.send("server.clients:" & $len & NL)
-  len = server.subscribers.len
+  len = context.subscribers.len
   client.send("server.subscribers:" & $len & NL)
   case CUR_ENGINE:
     of Engine.engMemory:
@@ -458,7 +460,7 @@ proc processEnv*(client: Socket,params: seq[string]):void =
   client.send($res & NL)
 
 #sub 127.0.0.1 11214
-proc processSub*(server: Server, client: Socket,params: seq[string]):void =
+proc processSub*(context: Context, client: Socket,params: seq[string]):void =
   ## command for subscribe one server for succesful set command on another server For example you have 2 servers
   ##
   ## .. code-block:: Nim
@@ -486,8 +488,9 @@ proc processSub*(server: Server, client: Socket,params: seq[string]):void =
     if intVal >= 0:
       debug("trying add subscriber on address:" & address & " port:" & $intVal)
       try:
-        var subscriber: Socket = newClient(address, intVal)
-        server.subscribers.add(subscriber)
+        var socket: Socket = newClient(address, intVal)
+        var subscriber = Subscriber(socket: socket, address: address, port: intVal)
+        context.subscribers.add(subscriber)
         res = "0"
       except:
         debug("error connect")
@@ -537,7 +540,7 @@ proc processKeys(client: Socket, params: seq[string]): void =
   sendStatus(client, Status.theEnd)
   discard destroy(cursor)
 
-proc parseLine(server: Server, client: Socket, line: string):bool =
+proc parseLine(server: Server, context: Context, client: Socket, line: string):bool =
   result = false
   let
     params = splitWhitespace(line & "")
@@ -545,32 +548,32 @@ proc parseLine(server: Server, client: Socket, line: string):bool =
   # debug(line)
   case command:
     of $Cmd.cmdSet:
-      processSet(server, client, params, false)
+      processSet(context, client, params, false)
     of $Cmd.cmdAdd:
-      processSet(server, client, params, true)
+      processSet(context, client, params, true)
     of $Cmd.cmdGet:
       processGet(client,params)
     of $Cmd.cmdDelete:
-      processDelete(server, client, params)  
+      processDelete(context, client, params)  
     of $Cmd.cmdEcho:
       client.send(line & NL)
     of $Cmd.cmdStat:
-      processStat(server, client)
+      processStat(server, context, client)
     of $Cmd.cmdEnv:
       processEnv(client, params)
     of $Cmd.cmdDie:
       ## command for debug purpose - close current session and gracefully stop server after next connect
       die = true
-      closeClient(server, client)
+      closeClient(context, client)
       result = true
     of $Cmd.cmdQuit:
-      closeClient(server, client)
+      closeClient(context, client)
       result = true
     of $Cmd.cmdUnknown:
       debug("Wrong protocol, line: " & line)
       sendStatus(client,Status.error)
     of $Cmd.cmdsub:
-      processSub(server, client, params)
+      processSub(context, client, params)
     of $Cmd.cmdKeys:
       processKeys(client, params)
     else:
@@ -579,10 +582,12 @@ proc parseLine(server: Server, client: Socket, line: string):bool =
   return result
 
 proc processClient(server: Server, client: Socket) =
+  var context = Context(subscribers: @[])
   try:
     if replicationAddress[].len > 0 and replicationPort > 0:
-      var subscriber: Socket = newClient(replicationAddress[], replicationPort)
-      server.subscribers.add(subscriber)
+      var socket: Socket = newClient(replicationAddress[], replicationPort)
+      var subscriber = Subscriber(socket: socket, address: replicationAddress[], port: replicationPort)
+      context.subscribers.add(subscriber)
   except:
     debug("error connect to repica " & replicationAddress[] & ":" & $replicationPort)
   while true:
@@ -590,12 +595,12 @@ proc processClient(server: Server, client: Socket) =
     readLine(client, line)
     #var line = client.recvLine()
     if line != "":
-      let stop = parseLine(server, client, line)
+      let stop = parseLine(server, context, client, line)
       if stop:
         break
     else:
       #It seems sock received "", this it means connection has been closed.
-      closeClient(server, client)
+      closeClient(context, client)
       break
 
 proc free(obj: pointer) {.importc: "free", header: "<stdio.h>"}
@@ -750,7 +755,7 @@ proc serve*(conf:Config) =
   #die
   echo "die server"
   for i, c in server.clients:
-    closeClient(server, c)
+    c.close()
   server.socket.close()
   echo "exit"
 
