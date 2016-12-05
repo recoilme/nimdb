@@ -1,6 +1,6 @@
 import net, threadpool, strutils
 
-const bytes = 8
+const bytes = 800
 const content = repeatStr(bytes, "x")
 
 proc processClient(client: Socket) =
