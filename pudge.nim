@@ -54,7 +54,8 @@ import
   threadpool,
   locks,
   pudgeclient,
-  parseopt
+  parseopt,
+  sequtils
 
 # types
 type 
@@ -76,6 +77,8 @@ type
     address : string
     port    : int32
     debug*   : bool
+    replicationAddress: string
+    replicationPort: int32
     sophiaParams: seq[SophiaParams]
     expectation: Expectation
 # enums
@@ -112,6 +115,8 @@ var die : bool# global var?
 var keyMaxSize: int = 30
 var valueMaxSize: int = 2000
 var cmdGetBatchSize: int = 1000
+var replicationAddress: ptr string
+var replicationPort: int = 0
 
 
 #Global data
@@ -127,6 +132,25 @@ const GET_CMD_ENDING = $Status.theEnd & NL
 var env : pointer
 var db : pointer
 var L: Lock
+
+proc processSubscribers(server: Server, process: proc(s: Socket): int) =
+  if server.subscribers.len > 0:
+    var forDelete: seq[int]
+    for i, sub in server.subscribers:
+      var res = process(sub)
+      if res < 0:
+        if forDelete.isNil:
+          forDelete = @[]
+        forDelete.add(i)
+    if not forDelete.isNil:
+      if forDelete.len == 1: # most common case
+        server.subscribers.del(forDelete[0])
+      else:
+        var deletedCount = 0
+        for i in forDelete:
+          server.subscribers.delete(i - deletedCount)
+          deletedCount += 1
+     # TODO: recreate deleted subscribers
 
 proc newServer(): Server =
   ## Constructor for creating a new ``Server``.
@@ -145,6 +169,8 @@ proc closeClient(server: Server, client: Socket) =
     if c == client:
       server.clients.del(i)#is it GC safe? not sure..
       break
+  for s in server.subscribers:
+    s.close()
 
 proc sendStatus(client: Socket,status: Status):void=
   client.send($status & NL)
@@ -215,10 +241,7 @@ proc processSet(server: Server, client: Socket, params: seq[string], asAdd: bool
       else:
         if not noreply:
           sendStatus(client, Status.stored)
-        #if server has subscribed servers - send set to it
-        if server.subscribers.len > 0:
-          for sub in server.subscribers:
-            discard set(sub, key, val, true)
+        processSubscribers(server, proc(s: Socket): int = setNoreply(s, key, val))
     else:
       if client != nil:
         sendStatus(client, Status.notStored)
@@ -335,9 +358,7 @@ proc processDelete(server: Server, client: Socket, params: seq[string]): void =
       discard o.setstring("key".cstring, addr key[0], (key.len).cint)
       var res = db.delete(o)
 
-      if server.subscribers.len > 0:
-        for sub in server.subscribers:
-          discard delete(sub, key, true)
+      processSubscribers(server, proc(s: Socket): int = deleteNoreply(s, key))
 
       if not noreply:
         if res == 0:
@@ -558,6 +579,12 @@ proc parseLine(server: Server, client: Socket, line: string):bool =
   return result
 
 proc processClient(server: Server, client: Socket) =
+  try:
+    if replicationAddress[].len > 0 and replicationPort > 0:
+      var subscriber: Socket = newClient(replicationAddress[], replicationPort)
+      server.subscribers.add(subscriber)
+  except:
+    debug("error connect to repica " & replicationAddress[] & ":" & $replicationPort)
   while true:
     var line {.inject.}: TaintedString = ""
     readLine(client, line)
@@ -592,6 +619,7 @@ proc initVars(conf:Config):void =
   keyMaxSize = conf.expectation.keyMaxSize
   valueMaxSize = conf.expectation.valueMaxSize
   cmdGetBatchSize = conf.expectation.cmdGetBatchSize
+  replicationPort = conf.replicationPort
   case CUR_ENGINE:
     of Engine.engMemory:
       debug("MEMORY")
@@ -698,6 +726,9 @@ proc readCfg*():Config  =
 proc serve*(conf:Config) =
   ## run server with Config
   initVars(conf)
+  var replicationAddressCopy = conf.replicationAddress
+  replicationAddress = replicationAddressCopy.addr
+
   var server = newServer()# global var?
   server.socket = newSocket(domain = AF_INET, sockType = SOCK_STREAM,
     protocol = IPPROTO_TCP, buffered = true)
@@ -709,9 +740,9 @@ proc serve*(conf:Config) =
 
   while not die:
     var client: Socket = newSocket()
-    debug("New client")
     server.socket.accept(client)
     server.clients.add client
+    debug("New client")
     if DEBUG:
       processClient(server,client)
     else:
