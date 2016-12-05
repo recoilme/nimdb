@@ -43,7 +43,7 @@ proc newClient*(host: string = "127.0.0.1", port: int = 11213): Socket =
   return result
 
 
-proc set*(socket: Socket, key:string, val:string, noreply: bool = false):bool =
+proc set*(socket: Socket, key:string, val:string):bool =
   ##
   ## .. code-block:: Nim
   ##
@@ -52,30 +52,29 @@ proc set*(socket: Socket, key:string, val:string, noreply: bool = false):bool =
   ##    echo "STORED"
   ##  else:
   ##    echo "NOT STORED"
-  let message = 
-    if noreply:
-      "set " & key & " 0 0 " & $val.len & " noreply" & NL & val & NL
-    else:
-      "set " & key & " 0 0 " & $val.len & NL & val & NL    
-  socket.send(message)
-  if noreply:
-    return true
-  else:  
-    let res = socket.recvLine()
-    return res == "STORED"
+  socket.send("set " & key & " 0 0 " & $val.len & NL & val & NL)
+  let res = socket.recvLine()
+  return res == "STORED"
+
+proc setNoreply*(socket: Socket, key:string, val:string):int =
+  var message = "set " & key & " 0 0 " & $val.len & " noreply" & NL & val & NL
+  return socket.send(message.cstring, message.len)
 
 proc delete*(socket: Socket, key: string, noreply: bool = false): bool = 
-  let message = 
-    if noreply:
-      "delete " & key & " noreply" & NL
-    else:  
-      "delete " & key & NL
-  socket.send(message)
-  if noreply:
-    return true
-  else:  
-    let res = socket.recvLine()
-    return res == "DELETED"
+  ##
+  ## .. code-block:: Nim
+  ##
+  ##  let result = client.delete("key")
+  ##  if result == true:
+  ##    echo "DELETED"
+  ##  else:
+  ##    echo "NOT FOUND"
+  socket.send("delete " & key & NL)
+  return socket.recvLine() == "DELETED"
+
+proc deleteNoreply*(socket: Socket, key: string, noreply: bool = false): int = 
+  var message = "delete " & key & " noreply" & NL
+  return socket.send(message.cstring, message.len)
 
 proc get*(socket: Socket, key:string):string  =
   ##
