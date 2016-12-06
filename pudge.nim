@@ -88,6 +88,8 @@ type
     debug*   : bool
     replicationAddress: string
     replicationPort: int32
+    masterAddress: string
+    masterPort: int32
     sophiaParams: seq[SophiaParams]
     expectation: Expectation
 # enums
@@ -699,6 +701,48 @@ proc processClient(server: Server, client: Socket) =
       closeClient(context, client)
       break
 
+proc syncWithMaster(masterAddress: string, masterPort: int) =
+  var socket = newClient(masterAddress, masterPort)
+  var bufferLen = valueMaxSize
+  var buffer = createU(char, bufferLen)
+  try:
+    echo "Master synchronization started..."
+    socket.send("keyvalues *" & NL)
+    var res = socket.recvLine()
+    while res != "END":
+      var size:int
+      var key: string = nil
+      try:
+        let params = splitWhitespace(res & "")
+        size = parseInt(params[params.len-1])
+        key = params[1]
+      except:
+        break
+      
+      let diff = size - bufferLen
+      if diff > 0:
+        bufferLen = max(bufferLen * 2, bufferLen + diff)
+        buffer = resize(buffer, bufferLen)
+      
+      let readBytes = socket.recv(buffer, size)
+      socket.skip(2) # NL
+      
+      # write kv
+      var o = document(db)
+      discard o.setstring("key".cstring, addr key[0], (key.len).cint)
+      discard o.setstring("value".cstring, buffer, readBytes.cint)
+      var writeStatus = db.set(o);
+      if writeStatus < 0:
+        echo "Master synchronization failure"
+        socket.close()
+        return
+
+      res = socket.recvLine()
+    echo "Master synchronization completed"
+  finally:
+    dealloc(buffer)
+    socket.close()
+
 proc free(obj: pointer) {.importc: "free", header: "<stdio.h>"}
 
 proc errorExit() =
@@ -829,6 +873,9 @@ proc serve*(conf:Config) =
   initVars(conf)
   var replicationAddressCopy = conf.replicationAddress
   replicationAddress = replicationAddressCopy.addr
+
+  if conf.masterAddress.len > 0 and conf.masterPort > 0:
+    syncWithMaster(conf.masterAddress, conf.masterPort)
 
   var server = newServer()# global var?
   server.socket = newSocket(domain = AF_INET, sockType = SOCK_STREAM,
