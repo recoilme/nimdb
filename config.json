@@ -8,6 +8,10 @@
     "valueMaxSize": 800,
     "cmdGetBatchSize": 1000
   },
+  "replicationAddress": "",
+  "replicationPort": 0,
+  "masterAddress": "",
+  "masterPort": 0,
   "sophiaParams": [
     {
       "key": "sophia.path",
