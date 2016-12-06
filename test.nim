@@ -13,9 +13,9 @@ proc runServer(conf:Config):Future[void] {.async.} =
 suite "test suite for pudge":
   setup:
     let result = 4
-    let size = 10000000
+    var size = 1000000
     const bytes = 800
-    const content = repeatStr(bytes, "t")
+    const content = repeatStr(bytes-7, "x")
     var conf: Config = readCfg()
 
     #echo repr(c)
@@ -35,10 +35,14 @@ suite "test suite for pudge":
       t = toSeconds(getTime())
 
     echo "start: ",$(t)
+    let len = intToStr(size).len
     for i in 1..size:
 
-      key = "key" & $i
-      res = client.set(key, "val" & $i & content)
+      key = $i
+      val = newStringOfCap(bytes)
+      val.add(intToStr(i,len))
+      val.add(content)
+      res = client.set(key, val)
       if res == false:
         break
     check(res == true)
@@ -55,10 +59,10 @@ suite "test suite for pudge":
     echo "start: ",$(t)
     for i in 1..size:
 
-      key = "key" & $i
+      key = $i
       val =  client.get(key)
       if (i == size):
         echo "val:", val
-    check(val == "val" & $size & content)
+    check(val ==  $size & content)
     echo "Read time [s] ", $(toSeconds(getTime()) - t)
     client.quit()
