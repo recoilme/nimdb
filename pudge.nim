@@ -104,6 +104,7 @@ type
     cmdEnv = "env",
     cmdSub = "sub",
     cmdKeys = "keys"
+    cmdKeyValues = "keyvalues"
 
   Status = enum
     stored = "STORED",
@@ -266,6 +267,7 @@ proc processGet(client: Socket,params: seq[string]):void=
   ## value
   ## END
   ## if key not found - value is empty
+  ## NOTE: if key contains '*' character then command processed like a KEYVALUES command (see processKeyValues)
   if params.len<2:
     debug("wrong params for get command")
     sendStatus(client, Status.error)
@@ -550,6 +552,85 @@ proc processKeys(client: Socket, params: seq[string]): void =
   sendStatus(client, Status.theEnd)
   discard destroy(cursor)
 
+proc processKeyValues(client: Socket, params: seq[string]): void = 
+  ## Command for fetching huge amount of key-values by key pattern:
+  ## KEYVALUES [prefix]* [minimal unixtime]
+  ##
+  ## For example get all db data:
+  ## KEYVALUES *
+  ## VALUE firstkey 0 10
+  ## firstvalue
+  ## VALUE secondkey 0 11
+  ## secondvalue
+  ## ...
+  ## VALUE lastkey 0 9
+  ## lastvalue
+  ## END
+  if params.len != 2:
+    sendStatus(client, Status.error)
+    return
+  var pattern = params[1]
+  if pattern.len == 0 or not(pattern[pattern.len - 1] == '*'):
+    sendStatus(client, Status.error)
+    return
+  pattern = pattern.substr(0, pattern.len - 2)
+
+  var cursor = cursor(env);
+  var o = document(db)
+  if pattern.len > 0:
+    discard o.setstring("prefix".cstring, addr pattern[0], (pattern.len).cint)
+  o = cursor.get(o)
+
+  var bufferLen = (20 + keyMaxSize + valueMaxSize) * min(cmdGetBatchSize, params.len - 1) 
+  var bufferPos = 0 
+  var buffer = cast[ptr array[0, char]](createU(char, bufferLen))
+  var i = 0
+
+  while o != nil:
+    var keySize, valueSize: cint
+    var keyPtr = o.getstring("key".cstring, addr keySize)
+    var valuePtr = o.getstring("value".cstring, addr valueSize)
+
+    let diff = (valueSize + keySize + 20) - (bufferLen - bufferPos)
+    if diff > 0:
+      bufferLen = max(bufferLen * 2, bufferLen + diff)
+      buffer = resize(buffer, bufferLen)
+
+    var header1 = $Status.value & " " 
+    var header2 = " 0 " & $valueSize & NL
+    copyMem(addr buffer[bufferPos], header1.cstring, header1.len)
+    bufferPos += header1.len
+
+    copyMem(addr buffer[bufferPos], keyPtr, keySize)
+    bufferPos += keySize
+
+    copyMem(addr buffer[bufferPos], header2.cstring, header2.len)
+    bufferPos += header2.len
+
+    copyMem(addr buffer[bufferPos], valuePtr, valueSize)
+    bufferPos += valueSize
+
+    copyMem(addr buffer[bufferPos], NL.cstring, NL.len)
+    bufferPos += NL.len
+
+    inc(i)
+    if i mod cmdGetBatchSize == 0:
+      discard client.send(buffer, bufferPos)
+      bufferPos = 0
+    o = cursor.get(o)
+  
+  let diff = GET_CMD_ENDING.len - (bufferLen - bufferPos)
+  if diff > 0:
+      bufferLen = bufferLen + diff
+      buffer = resize(buffer, bufferLen)
+
+  copyMem(addr buffer[bufferPos], GET_CMD_ENDING.cstring, GET_CMD_ENDING.len)
+  bufferPos += GET_CMD_ENDING.len
+
+  discard client.send(buffer, bufferPos)
+  dealloc(buffer)
+  discard destroy(cursor)
+
 proc parseLine(server: Server, context: Context, client: Socket, line: string):bool =
   result = false
   let
@@ -562,7 +643,10 @@ proc parseLine(server: Server, context: Context, client: Socket, line: string):b
     of $Cmd.cmdAdd:
       processSet(context, client, params, true)
     of $Cmd.cmdGet:
-      processGet(client,params)
+      if params.len > 1 and params[1].contains('*'):
+        processKeyValues(client, params)
+      else:
+        processGet(client,params)
     of $Cmd.cmdDelete:
       processDelete(context, client, params)  
     of $Cmd.cmdEcho:
@@ -586,6 +670,8 @@ proc parseLine(server: Server, context: Context, client: Socket, line: string):b
       processSub(context, client, params)
     of $Cmd.cmdKeys:
       processKeys(client, params)
+    of $Cmd.cmdKeyValues:
+      processKeyValues(client, params)
     else:
       debug("Unknown command: " & command)
       sendStatus(client,Status.error)
