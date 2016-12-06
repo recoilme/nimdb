@@ -39,7 +39,7 @@ suite "test suite for pudge":
     for i in 1..size:
 
       key = $i
-      val = newStringOfCap(size)
+      val = newStringOfCap(bytes)
       val.add(intToStr(i,len))
       val.add(content)
       res = client.set(key, val)
