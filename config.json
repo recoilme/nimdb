@@ -10,6 +10,8 @@
   },
   "replicationAddress": "",
   "replicationPort": 0,
+  "masterAddress": "",
+  "masterPort": 0,
   "sophiaParams": [
     {
       "key": "sophia.path",

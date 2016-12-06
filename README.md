@@ -23,7 +23,7 @@ nim c pudge.nim
 ```
 Start with the custom configuration:
 ```
-./pudge --config path/to/config.json
+./pudge --config=path/to/config.json
 ```
 ## Example
 From Nim
