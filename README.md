@@ -21,6 +21,10 @@ git clone https://github.com/recoilme/pudge.git
 nimble install yaml
 nim c pudge.nim
 ```
+Start with the custom configuration:
+```
+./pudge --config=path/to/config.json
+```
 ## Example
 From Nim
 ```

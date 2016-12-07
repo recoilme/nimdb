@@ -56,6 +56,26 @@ proc set*(socket: Socket, key:string, val:string):bool =
   let res = socket.recvLine()
   return res == "STORED"
 
+proc setNoreply*(socket: Socket, key:string, val:string):int =
+  var message = "set " & key & " 0 0 " & $val.len & " noreply" & NL & val & NL
+  return socket.send(message.cstring, message.len)
+
+proc delete*(socket: Socket, key: string): bool = 
+  ##
+  ## .. code-block:: Nim
+  ##
+  ##  let result = client.delete("key")
+  ##  if result == true:
+  ##    echo "DELETED"
+  ##  else:
+  ##    echo "NOT FOUND"
+  socket.send("delete " & key & NL)
+  return socket.recvLine() == "DELETED"
+
+proc deleteNoreply*(socket: Socket, key: string, noreply: bool = false): int = 
+  var message = "delete " & key & " noreply" & NL
+  return socket.send(message.cstring, message.len)
+
 proc get*(socket: Socket, key:string):string  =
   ##
   ## .. code-block:: Nim
@@ -88,3 +108,4 @@ proc get*(socket: Socket, key:string):string  =
 proc quit*(socket: Socket) =
   ## close current session
   socket.send("quit" & NL)
+  socket.close()
