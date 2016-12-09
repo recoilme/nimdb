@@ -55,13 +55,16 @@ import
   locks,
   pudgeclient,
   parseopt,
-  sequtils
+  sequtils,
+  sharedlist
 
 # types
 type 
   Server = ref object
     socket  : Socket
-    clients : seq[Socket]
+    closedClientIds : SharedList[int]
+    clientsCounter: int # only incremented
+    activeClients: int
 
   Subscriber = ref object
     socket: Socket
@@ -72,6 +75,7 @@ type
   # every connection has it's personal context
   Context = ref object
     subscribers   : seq[Subscriber]
+    clientId: int
 
   SophiaParams = object
     key : string
@@ -173,7 +177,7 @@ proc processSubscribers(context: Context, process: proc(s: Socket): int) =
 
 proc newServer(): Server =
   ## Constructor for creating a new ``Server``.
-  Server(socket: newSocket(), clients: @[])
+  Server(socket: newSocket(), closedClientIds: initSharedList[int](), clientsCounter: 0, activeClients: 0)
 
 
 proc debug(msg:string) =
@@ -182,10 +186,15 @@ proc debug(msg:string) =
     echo $msg
     release(L)
 
-proc closeClient(context: Context, client: Socket) =
-  client.close()
-  for s in context.subscribers:
-    s.socket.close()
+proc closeClient(server: ptr Server, context: Context, client: Socket) =
+  try:
+    client.close()
+  except:
+    echo "error closing client",$client.getSocketError()
+  if context!=nil:
+    for s in context.subscribers:
+      s.socket.close()
+  server.closedClientIds.add(context.clientId)
 
 proc sendStatus(client: Socket,status: Status):void=
   client.send($status & NL)
@@ -382,11 +391,13 @@ proc processDelete(context: Context, client: Socket, params: seq[string]): void 
         else:
           sendStatus(client, Status.error)
 
-proc processStat(server: Server, context:Context, client: Socket):void =
+proc processStat(server: ptr Server, context:Context, client: Socket):void =
   ## example stat
   var len:int
-  len = server.clients.len
+  len = server.activeClients
   client.send("server.clients:" & $len & NL)
+  len = server.clientsCounter
+  client.send("server.clientsCounter:" & $len & NL)
   len = context.subscribers.len
   client.send("server.subscribers:" & $len & NL)
   case CUR_ENGINE:
@@ -633,7 +644,7 @@ proc processKeyValues(client: Socket, params: seq[string]): void =
   dealloc(buffer)
   discard destroy(cursor)
 
-proc parseLine(server: Server, context: Context, client: Socket, line: string):bool =
+proc parseLine(server: ptr Server, context: Context, client: Socket, line: string):bool =
   result = false
   let
     params = splitWhitespace(line & "")
@@ -660,10 +671,10 @@ proc parseLine(server: Server, context: Context, client: Socket, line: string):b
     of $Cmd.cmdDie:
       ## command for debug purpose - close current session and gracefully stop server after next connect
       die = true
-      closeClient(context, client)
+      closeClient(server, context, client)
       result = true
     of $Cmd.cmdQuit:
-      closeClient(context, client)
+      closeClient(server, context, client)
       result = true
     of $Cmd.cmdUnknown:
       debug("Wrong protocol, line: " & line)
@@ -679,8 +690,8 @@ proc parseLine(server: Server, context: Context, client: Socket, line: string):b
       sendStatus(client,Status.error)
   return result
 
-proc processClient(server: Server, client: Socket) =
-  var context = Context(subscribers: @[])
+proc processClient(server: ptr Server, client: Socket, clientId: int) =
+  var context = Context(subscribers: @[], clientId: clientId)
   try:
     if replicationAddress[].len > 0 and replicationPort > 0:
       var socket: Socket = newClient(replicationAddress[], replicationPort)
@@ -693,7 +704,9 @@ proc processClient(server: Server, client: Socket) =
     try:
       readLine(client, line)
     except:
-      client.close()  
+      echo "exception in readline",$client.getSocketError()
+      closeClient(server, context, client)
+      break  
     #var line = client.recvLine()
     if line != "":
       let stop = parseLine(server, context, client, line)
@@ -701,7 +714,7 @@ proc processClient(server: Server, client: Socket) =
         break
     else:
       #It seems sock received "", this it means connection has been closed.
-      closeClient(context, client)
+      closeClient(server, context, client)
       break
 
 proc syncWithMaster(masterAddress: string, masterPort: int) =
@@ -889,23 +902,38 @@ proc serve*(conf:Config) =
   server.socket.listen()
   echo("Server initialised!")
 
+  var clients: seq[tuple[socket: Socket, clientId: int]] = @[]
+  proc deleteClientById(clientId: int): bool = 
+    for i, c in clients:
+      if c.clientId == clientId:
+        dec(server.activeClients)
+        clients.del(i)
+        c.socket.close()
+        break
+    return true
+
   while not die:
-    var client: Socket = newSocket()
+    server.closedClientIds.iterAndMutate(deleteClientById)
+    var client: Socket
     try:
+      client = newSocket()
       server.socket.accept(client)
-      server.clients.add client
+      var clientId = server.clientsCounter
+      inc(server.clientsCounter)
+      inc(server.activeClients)
+      clients.add((client, clientId))
       debug("New client")
       if DEBUG:
-        processClient(server,client)
+        processClient(server.addr, client, clientId)
       else:
-        spawn processClient(server, client)
+        spawn processClient(server.addr, client, clientId)
     except:
-      client.close()
-
+      echo "exception accept",$client.getSocketError()
+      #closeClient(server.addr, nil, client)
   #die
   echo "die server"
-  for i, c in server.clients:
-    c.close()
+  for i, c in clients:
+    c.socket.close()
   server.socket.close()
   echo "exit"
 
