@@ -187,9 +187,13 @@ proc debug(msg:string) =
     release(L)
 
 proc closeClient(server: ptr Server, context: Context, client: Socket) =
-  client.close()
-  for s in context.subscribers:
-    s.socket.close()
+  try:
+    client.close()
+  except:
+    echo "error closing client",$client.getSocketError()
+  if context!=nil:
+    for s in context.subscribers:
+      s.socket.close()
   server.closedClientIds.add(context.clientId)
 
 proc sendStatus(client: Socket,status: Status):void=
@@ -697,7 +701,12 @@ proc processClient(server: ptr Server, client: Socket, clientId: int) =
     debug("error connect to repica " & replicationAddress[] & ":" & $replicationPort)
   while true:
     var line {.inject.}: TaintedString = ""
-    readLine(client, line)
+    try:
+      readLine(client, line)
+    except:
+      echo "exception in readline",$client.getSocketError()
+      closeClient(server, context, client)
+      break  
     #var line = client.recvLine()
     if line != "":
       let stop = parseLine(server, context, client, line)
@@ -905,17 +914,22 @@ proc serve*(conf:Config) =
 
   while not die:
     server.closedClientIds.iterAndMutate(deleteClientById)
-    var client: Socket = newSocket()
-    server.socket.accept(client)
-    var clientId = server.clientsCounter
-    inc(server.clientsCounter)
-    inc(server.activeClients)
-    clients.add((client, clientId))
-    debug("New client")
-    if DEBUG:
-      processClient(server.addr, client, clientId)
-    else:
-      spawn processClient(server.addr, client, clientId)
+    var client: Socket
+    try:
+      client = newSocket()
+      server.socket.accept(client)
+      var clientId = server.clientsCounter
+      inc(server.clientsCounter)
+      inc(server.activeClients)
+      clients.add((client, clientId))
+      debug("New client")
+      if DEBUG:
+        processClient(server.addr, client, clientId)
+      else:
+        spawn processClient(server.addr, client, clientId)
+    except:
+      echo "exception accept",$client.getSocketError()
+      #closeClient(server.addr, nil, client)
   #die
   echo "die server"
   for i, c in clients:
