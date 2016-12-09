@@ -1,7 +1,7 @@
 import asyncnet, asyncdispatch,strutils
 
 var clients {.threadvar.}: seq[AsyncSocket]
-const bytes = 800
+const bytes = 2000
 const content = repeatStr(bytes, "x")
 
 proc processClient(client: AsyncSocket) {.async.} =

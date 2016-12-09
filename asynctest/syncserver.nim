@@ -1,6 +1,6 @@
 import net, threadpool, strutils
 
-const bytes = 800
+const bytes = 2000
 const content = repeatStr(bytes, "x")
 
 proc processClient(client: Socket) =
@@ -9,7 +9,7 @@ proc processClient(client: Socket) =
     #readLine(client, line)
     var line = client.recvLine()
     if line != "":
-      echo "line:",line
+      #echo "line:",line
       client.send(content)
       if line == "quit":
         client.close()

@@ -7,10 +7,10 @@ proc newTask(task:int) =
   var socket = newSocket()
   socket.connect("127.0.0.1",Port(12345))
   echo "task",$task
-  for i in 1..100000:
+  for i in 1..100_000:
     let resp = $task & ":" & $i & NL
     socket.send(resp)
-    let res = socket.recv(800)
+    let res = socket.recv(2000)
     
     #echo $resp,$res
   socket.send("quit")
@@ -20,7 +20,7 @@ proc main()=
   echo "start"
   var t = toSeconds(getTime())
   parallel:
-    for i in 1..10:
+    for i in 1..30:
       spawn newTask(i)
   echo "end"
   echo "Read time [s] ", $(toSeconds(getTime()) - t)    
