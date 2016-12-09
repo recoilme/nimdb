@@ -690,7 +690,10 @@ proc processClient(server: Server, client: Socket) =
     debug("error connect to repica " & replicationAddress[] & ":" & $replicationPort)
   while true:
     var line {.inject.}: TaintedString = ""
-    readLine(client, line)
+    try:
+      readLine(client, line)
+    except:
+      client.close()  
     #var line = client.recvLine()
     if line != "":
       let stop = parseLine(server, context, client, line)
@@ -888,13 +891,17 @@ proc serve*(conf:Config) =
 
   while not die:
     var client: Socket = newSocket()
-    server.socket.accept(client)
-    server.clients.add client
-    debug("New client")
-    if DEBUG:
-      processClient(server,client)
-    else:
-      spawn processClient(server, client)
+    try:
+      server.socket.accept(client)
+      server.clients.add client
+      debug("New client")
+      if DEBUG:
+        processClient(server,client)
+      else:
+        spawn processClient(server, client)
+    except:
+      client.close()
+
   #die
   echo "die server"
   for i, c in server.clients:
