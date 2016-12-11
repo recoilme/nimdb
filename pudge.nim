@@ -65,7 +65,7 @@ type
     #closedClientIds : SharedList[int]
     #clientsCounter: int # only incremented
     #activeClients: int
-
+    
   Subscriber = ref object
     socket: Socket
     address: string
@@ -127,7 +127,6 @@ type
 
 # vars
 var DEBUG : bool
-var die : bool# global var?
 var keyMaxSize: int = 30
 var valueMaxSize: int = 2000
 var cmdGetBatchSize: int = 1000
@@ -136,8 +135,9 @@ var replicationPort: int = 0
 
 
 #Global data
-#var glock: Lock
-#var gdata {.guard: glock.}: Table[string, string]
+var glock: Lock
+var die : bool# global var?
+var gclientscounter {.guard: glock.}: int
 
 #contants
 const NL = chr(13) & chr(10)
@@ -150,7 +150,8 @@ var db : pointer
 var L: Lock
 
 proc processSubscribers( process: proc(s: Socket): int) =
-  echo("unimplemented")
+  let dummy=0
+  #echo("unimplemented")
   #[
   if context.subscribers.len > 0:
     var forRecreate: seq[Subscriber]
@@ -183,14 +184,18 @@ proc newServer(): Server =
 
 
 proc debug(msg:string) =
-  if DEBUG:
-    acquire(L)
-    echo $msg
-    release(L)
+  #if DEBUG:
+  acquire(L)
+  echo $msg
+  release(L)
 
 proc closeClient(client: Socket) =
   try:
     client.close()
+    {.locks: [glock].}:
+      dec(gclientscounter)
+      echo "Clients count:",$gclientscounter
+    debug("client closed")
   except:
     echo "error closing client",$client.getSocketError()
   #if context!=nil:
@@ -673,15 +678,15 @@ proc parseLine(client: Socket, line: string):bool =
       processEnv(client, params)
     of $Cmd.cmdDie:
       ## command for debug purpose - close current session and gracefully stop server after next connect
-      die = true
-      closeClient(client)
+      {.locks: [glock].}:
+        die = true
       result = true
     of $Cmd.cmdQuit:
-      closeClient(client)
       result = true
     of $Cmd.cmdUnknown:
       debug("Wrong protocol, line: " & line)
       sendStatus(client,Status.error)
+      result = true
     of $Cmd.cmdsub:
       #processSub(client, params)
       debug("unimplemented")
@@ -704,22 +709,29 @@ proc processClient(client: Socket) =
   #except:
     #debug("error connect to repica " & replicationAddress[] & ":" & $replicationPort)
   while true:
+    #check on die cmd before listen
+    {.locks: [glock].}:
+      if die:
+        break
     var line {.inject.}: TaintedString = ""
     try:
       readLine(client, line)
-    except:
+    except OSError:
       echo "exception in readline",$client.getSocketError()
-      #closeClient(server, context, client)
       break  
-    #var line = client.recvLine()
+    # dont process data if die cmd
+    {.locks: [glock].}:
+      if die:
+        break
     if line != "":
       let stop = parseLine(client, line)
       if stop:
         break
     else:
       #It seems sock received "", this it means connection has been closed.
-      #closeClient(server, client)
+      debug("sock received ''")
       break
+  closeClient(client)
 
 proc syncWithMaster(masterAddress: string, masterPort: int) =
   var socket = newClient(masterAddress, masterPort)
@@ -777,8 +789,8 @@ proc initVars(conf:Config):void =
   ## Init all vars
   #{.locks: [glock].}:
     #gdata = initTable[string, string]()
-
-  die = false
+  {.locks: [glock].}:
+    die = false
   echo "Engine:" & $CUR_ENGINE
   DEBUG = conf.debug
   keyMaxSize = conf.expectation.keyMaxSize
@@ -915,8 +927,10 @@ proc serve*(conf:Config) =
         #c.socket.close()
        # break
     #return true
-
-  while not die:
+  while true:
+    {.locks: [glock].}:
+      if die:
+        break
     #server.closedClientIds.iterAndMutate(deleteClientById)
     var client: Socket
     try:
@@ -927,17 +941,18 @@ proc serve*(conf:Config) =
       #inc(server.activeClients)
       #clients.add((client, clientId))
       debug("New client")
+      {.locks: [glock].}:
+        inc(gclientscounter)
+        echo "Clients count:",$gclientscounter
       if DEBUG:
         processClient(client)
       else:
         spawn processClient(client)
     except:
-      echo "exception accept",$client.getSocketError()
-      #closeClient(server.addr, nil, client)
+      echo "exception in serve:",$client.getSocketError()
+      closeClient(client)
   #die
   echo "die server"
-  for i, c in clients:
-    c.socket.close()
   server.socket.close()
   echo "exit"
 
