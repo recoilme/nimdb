@@ -19,7 +19,7 @@ proc main()=
   echo "start"
   var t = toSeconds(getTime())
   parallel:
-    for i in 1..10:
+    for i in 1..30:
       spawn newTask(i)
   echo "end"
   echo "Read time [s] ", $(toSeconds(getTime()) - t)    
