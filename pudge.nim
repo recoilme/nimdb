@@ -192,10 +192,10 @@ proc debug(msg:string) =
 proc closeClient(client: Socket) =
   try:
     client.close()
+    debug("client closed")
     {.locks: [glock].}:
       dec(gclientscounter)
       echo "Clients count:",$gclientscounter
-    debug("client closed")
   except:
     echo "error closing client",$client.getSocketError()
   #if context!=nil:
@@ -204,7 +204,12 @@ proc closeClient(client: Socket) =
   #server.closedClientIds.add(context.clientId)
 
 proc sendStatus(client: Socket,status: Status):void=
-  client.send($status & NL)
+  if not client.trySend($status & NL):
+    closeClient(client)
+
+proc sendString(client: Socket,str: string):void=
+  if not client.trySend($str):
+    closeClient(client)
 
 
 proc processSet(client: Socket, params: seq[string], asAdd: bool):void=
@@ -295,8 +300,13 @@ proc processGet(client: Socket,params: seq[string]):void=
   var buffer = cast[ptr array[0, char]](createU(char, bufferLen))
   for i in 1..(params.len - 1):
     if i mod cmdGetBatchSize == 0:
-      discard client.send(buffer, bufferPos)
-      bufferPos = 0
+      try:
+        discard client.send(buffer, bufferPos)
+      except:
+        closeClient(client)
+        break
+      finally:
+        bufferPos = 0
     var key = params[i]
     var val:string = nil
     case CUR_ENGINE:
@@ -346,9 +356,12 @@ proc processGet(client: Socket,params: seq[string]):void=
 
   copyMem(addr buffer[bufferPos], GET_CMD_ENDING.cstring, GET_CMD_ENDING.len)
   bufferPos += GET_CMD_ENDING.len
-
-  discard client.send(buffer, bufferPos)
-  dealloc(buffer)
+  try:
+    discard client.send(buffer, bufferPos)
+  except:
+    closeClient(client)
+  finally:
+    dealloc(buffer)
 
 proc processDelete(client: Socket, params: seq[string]): void =
   ## delete key [noreply]
@@ -400,13 +413,15 @@ proc processDelete(client: Socket, params: seq[string]): void =
 
 proc processStat( client: Socket):void =
   ## example stat
+  var msg = ""
   var len:int
-  #len = server.activeClients
-  client.send("server.clients:" & $len & NL)
-  #len = server.clientsCounter
-  #client.send("server.clientsCounter:" & $len & NL)
-  #len = context.subscribers.len
-  client.send("server.subscribers:" & $len & NL)
+  {.locks: [glock].}:
+    len = gclientscounter
+  msg = msg & "server.clients:" & $len & NL
+
+  msg = msg & "server.clientsCounter:" & $len & NL
+  len = -1
+  msg = msg & "server.subscribers:" & $len & NL
   case CUR_ENGINE:
     of Engine.engMemory:
       echo ""
@@ -414,7 +429,7 @@ proc processStat( client: Socket):void =
       var cursor = env.getobject(nil)
       var o:pointer
       o = cursor.get(o)
-      var msg = ""
+      
       while o != nil:
         var size:cint = 0
         var keyPointer = o.getstring("key".cstring, addr size)
@@ -429,8 +444,7 @@ proc processStat( client: Socket):void =
 
         o = cursor.get(o)
       discard destroy(cursor)
-      client.send(msg)
-
+      client.sendString(msg)
     else:
       if client != nil:
         sendStatus(client, Status.error)
@@ -489,7 +503,7 @@ proc processEnv*(client: Socket,params: seq[string]):void =
       else:
         res = $Status.error
 
-  client.send($res & NL)
+  client.sendString($res & NL)
 
 #sub 127.0.0.1 11214
 #[
@@ -568,7 +582,7 @@ proc processKeys(client: Socket, params: seq[string]): void =
     var keyPtr = o.getstring("key".cstring, addr size)
     var key = $(cast[ptr array[0,char]](keyPtr)[])
     key = key.substr(0, size - 1)
-    client.send(key & NL)
+    client.sendString(key & NL)
     o = cursor.get(o)
   sendStatus(client, Status.theEnd)
   discard destroy(cursor)
@@ -636,8 +650,12 @@ proc processKeyValues(client: Socket, params: seq[string]): void =
 
     inc(i)
     if i mod cmdGetBatchSize == 0:
-      discard client.send(buffer, bufferPos)
-      bufferPos = 0
+      try:
+        discard client.send(buffer, bufferPos)
+      except:
+        closeClient(client)
+      finally:
+        bufferPos = 0
     o = cursor.get(o)
   
   let diff = GET_CMD_ENDING.len - (bufferLen - bufferPos)
@@ -648,9 +666,13 @@ proc processKeyValues(client: Socket, params: seq[string]): void =
   copyMem(addr buffer[bufferPos], GET_CMD_ENDING.cstring, GET_CMD_ENDING.len)
   bufferPos += GET_CMD_ENDING.len
 
-  discard client.send(buffer, bufferPos)
-  dealloc(buffer)
-  discard destroy(cursor)
+  try:
+    discard client.send(buffer, bufferPos)
+  except:
+    closeClient(client)
+  finally:
+    dealloc(buffer)
+    discard destroy(cursor)
 
 proc parseLine(client: Socket, line: string):bool =
   result = false
@@ -671,7 +693,7 @@ proc parseLine(client: Socket, line: string):bool =
     of $Cmd.cmdDelete:
       processDelete(client, params)  
     of $Cmd.cmdEcho:
-      client.send(line & NL)
+      client.sendString(line & NL)
     of $Cmd.cmdStat:
       processStat(client)
     of $Cmd.cmdEnv:
@@ -739,7 +761,7 @@ proc syncWithMaster(masterAddress: string, masterPort: int) =
   var buffer = createU(char, bufferLen)
   try:
     echo "Master synchronization started..."
-    socket.send("keyvalues *" & NL)
+    socket.sendString("keyvalues *" & NL)
     var res = socket.recvLine()
     while res != "END":
       var size:int
