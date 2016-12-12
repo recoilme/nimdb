@@ -62,10 +62,10 @@ import
 type 
   Server = ref object
     socket  : Socket
-    closedClientIds : SharedList[int]
-    clientsCounter: int # only incremented
-    activeClients: int
-
+    #closedClientIds : SharedList[int]
+    #clientsCounter: int # only incremented
+    #activeClients: int
+    
   Subscriber = ref object
     socket: Socket
     address: string
@@ -75,7 +75,7 @@ type
   # every connection has it's personal context
   Context = ref object
     subscribers   : seq[Subscriber]
-    clientId: int
+    #clientId: int
 
   SophiaParams = object
     key : string
@@ -127,7 +127,6 @@ type
 
 # vars
 var DEBUG : bool
-var die : bool# global var?
 var keyMaxSize: int = 30
 var valueMaxSize: int = 2000
 var cmdGetBatchSize: int = 1000
@@ -136,8 +135,9 @@ var replicationPort: int = 0
 
 
 #Global data
-#var glock: Lock
-#var gdata {.guard: glock.}: Table[string, string]
+var glock: Lock
+var die : bool# global var?
+var gclientscounter {.guard: glock.}: int
 
 #contants
 const NL = chr(13) & chr(10)
@@ -149,7 +149,10 @@ var env : pointer
 var db : pointer
 var L: Lock
 
-proc processSubscribers(context: Context, process: proc(s: Socket): int) =
+proc processSubscribers( process: proc(s: Socket): int) =
+  let dummy=0
+  #echo("unimplemented")
+  #[
   if context.subscribers.len > 0:
     var forRecreate: seq[Subscriber]
     for sub in context.subscribers:
@@ -174,33 +177,42 @@ proc processSubscribers(context: Context, process: proc(s: Socket): int) =
           s.socket = socket  
         except IOError:
           s.retryCooldown = cast[int](getTime()) + 10 # looks like a replica is down, delay next try
-
+        ]#
 proc newServer(): Server =
   ## Constructor for creating a new ``Server``.
-  Server(socket: newSocket(), closedClientIds: initSharedList[int](), clientsCounter: 0, activeClients: 0)
+  Server(socket: newSocket())#, closedClientIds: initSharedList[int](), clientsCounter: 0, activeClients: 0)
 
 
 proc debug(msg:string) =
-  if DEBUG:
-    acquire(L)
-    echo $msg
-    release(L)
+  #if DEBUG:
+  acquire(L)
+  echo $msg
+  release(L)
 
-proc closeClient(server: ptr Server, context: Context, client: Socket) =
+proc closeClient(client: Socket) =
   try:
     client.close()
+    debug("client closed")
+    {.locks: [glock].}:
+      dec(gclientscounter)
+      echo "Clients count:",$gclientscounter
   except:
     echo "error closing client",$client.getSocketError()
-  if context!=nil:
-    for s in context.subscribers:
-      s.socket.close()
-  server.closedClientIds.add(context.clientId)
+  #if context!=nil:
+    #for s in context.subscribers:
+      #s.socket.close()
+  #server.closedClientIds.add(context.clientId)
 
 proc sendStatus(client: Socket,status: Status):void=
-  client.send($status & NL)
+  if not client.trySend($status & NL):
+    closeClient(client)
+
+proc sendString(client: Socket,str: string):void=
+  if not client.trySend($str):
+    closeClient(client)
 
 
-proc processSet(context: Context, client: Socket, params: seq[string], asAdd: bool):void=
+proc processSet(client: Socket, params: seq[string], asAdd: bool):void=
   ## set command example
   ## set key 0 0 5\10\13value\10\13
   ## Response: STORED or ERROR
@@ -265,7 +277,7 @@ proc processSet(context: Context, client: Socket, params: seq[string], asAdd: bo
       else:
         if not noreply:
           sendStatus(client, Status.stored)
-        processSubscribers(context, proc(s: Socket): int = setNoreply(s, key, val))
+        processSubscribers( proc(s: Socket): int = setNoreply(s, key, val))
     else:
       if client != nil:
         sendStatus(client, Status.notStored)
@@ -288,8 +300,13 @@ proc processGet(client: Socket,params: seq[string]):void=
   var buffer = cast[ptr array[0, char]](createU(char, bufferLen))
   for i in 1..(params.len - 1):
     if i mod cmdGetBatchSize == 0:
-      discard client.send(buffer, bufferPos)
-      bufferPos = 0
+      try:
+        discard client.send(buffer, bufferPos)
+      except:
+        closeClient(client)
+        break
+      finally:
+        bufferPos = 0
     var key = params[i]
     var val:string = nil
     case CUR_ENGINE:
@@ -339,11 +356,14 @@ proc processGet(client: Socket,params: seq[string]):void=
 
   copyMem(addr buffer[bufferPos], GET_CMD_ENDING.cstring, GET_CMD_ENDING.len)
   bufferPos += GET_CMD_ENDING.len
+  try:
+    discard client.send(buffer, bufferPos)
+  except:
+    closeClient(client)
+  finally:
+    dealloc(buffer)
 
-  discard client.send(buffer, bufferPos)
-  dealloc(buffer)
-
-proc processDelete(context: Context, client: Socket, params: seq[string]): void =
+proc processDelete(client: Socket, params: seq[string]): void =
   ## delete key [noreply]
   ## response variants:
   ## DELETED
@@ -383,7 +403,7 @@ proc processDelete(context: Context, client: Socket, params: seq[string]): void 
       discard o.setstring("key".cstring, addr key[0], (key.len).cint)
       var res = db.delete(o)
 
-      processSubscribers(context, proc(s: Socket): int = deleteNoreply(s, key))
+      processSubscribers( proc(s: Socket): int = deleteNoreply(s, key))
 
       if not noreply:
         if res == 0:
@@ -391,15 +411,17 @@ proc processDelete(context: Context, client: Socket, params: seq[string]): void 
         else:
           sendStatus(client, Status.error)
 
-proc processStat(server: ptr Server, context:Context, client: Socket):void =
+proc processStat( client: Socket):void =
   ## example stat
+  var msg = ""
   var len:int
-  len = server.activeClients
-  client.send("server.clients:" & $len & NL)
-  len = server.clientsCounter
-  client.send("server.clientsCounter:" & $len & NL)
-  len = context.subscribers.len
-  client.send("server.subscribers:" & $len & NL)
+  {.locks: [glock].}:
+    len = gclientscounter
+  msg = msg & "server.clients:" & $len & NL
+
+  msg = msg & "server.clientsCounter:" & $len & NL
+  len = -1
+  msg = msg & "server.subscribers:" & $len & NL
   case CUR_ENGINE:
     of Engine.engMemory:
       echo ""
@@ -407,7 +429,7 @@ proc processStat(server: ptr Server, context:Context, client: Socket):void =
       var cursor = env.getobject(nil)
       var o:pointer
       o = cursor.get(o)
-      var msg = ""
+      
       while o != nil:
         var size:cint = 0
         var keyPointer = o.getstring("key".cstring, addr size)
@@ -422,8 +444,7 @@ proc processStat(server: ptr Server, context:Context, client: Socket):void =
 
         o = cursor.get(o)
       discard destroy(cursor)
-      client.send(msg)
-
+      client.sendString(msg)
     else:
       if client != nil:
         sendStatus(client, Status.error)
@@ -482,10 +503,11 @@ proc processEnv*(client: Socket,params: seq[string]):void =
       else:
         res = $Status.error
 
-  client.send($res & NL)
+  client.sendString($res & NL)
 
 #sub 127.0.0.1 11214
-proc processSub*(context: Context, client: Socket,params: seq[string]):void =
+#[
+proc processSub*(client: Socket,params: seq[string]):void =
   ## command for subscribe one server for succesful set command on another server For example you have 2 servers
   ##
   ## .. code-block:: Nim
@@ -524,7 +546,7 @@ proc processSub*(context: Context, client: Socket,params: seq[string]):void =
       debug("error parsing port")
       res = $Status.error
   client.send($res & NL)
-
+]#
 proc processKeys(client: Socket, params: seq[string]): void = 
   ## Simplified analogue of Redis KEYS command. Wildcard required.
   ## For example get all db keys:
@@ -560,7 +582,7 @@ proc processKeys(client: Socket, params: seq[string]): void =
     var keyPtr = o.getstring("key".cstring, addr size)
     var key = $(cast[ptr array[0,char]](keyPtr)[])
     key = key.substr(0, size - 1)
-    client.send(key & NL)
+    client.sendString(key & NL)
     o = cursor.get(o)
   sendStatus(client, Status.theEnd)
   discard destroy(cursor)
@@ -628,8 +650,12 @@ proc processKeyValues(client: Socket, params: seq[string]): void =
 
     inc(i)
     if i mod cmdGetBatchSize == 0:
-      discard client.send(buffer, bufferPos)
-      bufferPos = 0
+      try:
+        discard client.send(buffer, bufferPos)
+      except:
+        closeClient(client)
+      finally:
+        bufferPos = 0
     o = cursor.get(o)
   
   let diff = GET_CMD_ENDING.len - (bufferLen - bufferPos)
@@ -640,11 +666,15 @@ proc processKeyValues(client: Socket, params: seq[string]): void =
   copyMem(addr buffer[bufferPos], GET_CMD_ENDING.cstring, GET_CMD_ENDING.len)
   bufferPos += GET_CMD_ENDING.len
 
-  discard client.send(buffer, bufferPos)
-  dealloc(buffer)
-  discard destroy(cursor)
+  try:
+    discard client.send(buffer, bufferPos)
+  except:
+    closeClient(client)
+  finally:
+    dealloc(buffer)
+    discard destroy(cursor)
 
-proc parseLine(server: ptr Server, context: Context, client: Socket, line: string):bool =
+proc parseLine(client: Socket, line: string):bool =
   result = false
   let
     params = splitWhitespace(line & "")
@@ -652,35 +682,36 @@ proc parseLine(server: ptr Server, context: Context, client: Socket, line: strin
   # debug(line)
   case command:
     of $Cmd.cmdSet:
-      processSet(context, client, params, false)
+      processSet(client, params, false)
     of $Cmd.cmdAdd:
-      processSet(context, client, params, true)
+      processSet(client, params, true)
     of $Cmd.cmdGet:
       if params.len > 1 and params[1].contains('*'):
         processKeyValues(client, params)
       else:
         processGet(client,params)
     of $Cmd.cmdDelete:
-      processDelete(context, client, params)  
+      processDelete(client, params)  
     of $Cmd.cmdEcho:
-      client.send(line & NL)
+      client.sendString(line & NL)
     of $Cmd.cmdStat:
-      processStat(server, context, client)
+      processStat(client)
     of $Cmd.cmdEnv:
       processEnv(client, params)
     of $Cmd.cmdDie:
       ## command for debug purpose - close current session and gracefully stop server after next connect
-      die = true
-      closeClient(server, context, client)
+      {.locks: [glock].}:
+        die = true
       result = true
     of $Cmd.cmdQuit:
-      closeClient(server, context, client)
       result = true
     of $Cmd.cmdUnknown:
       debug("Wrong protocol, line: " & line)
       sendStatus(client,Status.error)
+      result = true
     of $Cmd.cmdsub:
-      processSub(context, client, params)
+      #processSub(client, params)
+      debug("unimplemented")
     of $Cmd.cmdKeys:
       processKeys(client, params)
     of $Cmd.cmdKeyValues:
@@ -690,32 +721,39 @@ proc parseLine(server: ptr Server, context: Context, client: Socket, line: strin
       sendStatus(client,Status.error)
   return result
 
-proc processClient(server: ptr Server, client: Socket, clientId: int) =
-  var context = Context(subscribers: @[], clientId: clientId)
-  try:
-    if replicationAddress[].len > 0 and replicationPort > 0:
-      var socket: Socket = newClient(replicationAddress[], replicationPort)
-      var subscriber = Subscriber(socket: socket, address: replicationAddress[], port: replicationPort, retryCooldown: 0)
-      context.subscribers.add(subscriber)
-  except:
-    debug("error connect to repica " & replicationAddress[] & ":" & $replicationPort)
+proc processClient(client: Socket) =
+  #var context = Context(subscribers: @[], clientId: clientId)
+  #try:
+    #if replicationAddress[].len > 0 and replicationPort > 0:
+      #var socket: Socket = newClient(replicationAddress[], replicationPort)
+      #var subscriber = Subscriber(socket: socket, address: replicationAddress[], port: replicationPort, retryCooldown: 0)
+      #context.subscribers.add(subscriber)
+  #except:
+    #debug("error connect to repica " & replicationAddress[] & ":" & $replicationPort)
   while true:
+    #check on die cmd before listen
+    {.locks: [glock].}:
+      if die:
+        break
     var line {.inject.}: TaintedString = ""
     try:
       readLine(client, line)
-    except:
+    except OSError:
       echo "exception in readline",$client.getSocketError()
-      closeClient(server, context, client)
       break  
-    #var line = client.recvLine()
+    # dont process data if die cmd
+    {.locks: [glock].}:
+      if die:
+        break
     if line != "":
-      let stop = parseLine(server, context, client, line)
+      let stop = parseLine(client, line)
       if stop:
         break
     else:
       #It seems sock received "", this it means connection has been closed.
-      closeClient(server, context, client)
+      debug("sock received ''")
       break
+  closeClient(client)
 
 proc syncWithMaster(masterAddress: string, masterPort: int) =
   var socket = newClient(masterAddress, masterPort)
@@ -723,7 +761,7 @@ proc syncWithMaster(masterAddress: string, masterPort: int) =
   var buffer = createU(char, bufferLen)
   try:
     echo "Master synchronization started..."
-    socket.send("keyvalues *" & NL)
+    socket.sendString("keyvalues *" & NL)
     var res = socket.recvLine()
     while res != "END":
       var size:int
@@ -773,8 +811,8 @@ proc initVars(conf:Config):void =
   ## Init all vars
   #{.locks: [glock].}:
     #gdata = initTable[string, string]()
-
-  die = false
+  {.locks: [glock].}:
+    die = false
   echo "Engine:" & $CUR_ENGINE
   DEBUG = conf.debug
   keyMaxSize = conf.expectation.keyMaxSize
@@ -903,37 +941,40 @@ proc serve*(conf:Config) =
   echo("Server initialised!")
 
   var clients: seq[tuple[socket: Socket, clientId: int]] = @[]
-  proc deleteClientById(clientId: int): bool = 
-    for i, c in clients:
-      if c.clientId == clientId:
-        dec(server.activeClients)
-        clients.del(i)
-        c.socket.close()
+  #proc deleteClientById(clientId: int): bool = 
+    #for i, c in clients:
+      #if c.clientId == clientId:
+        #dec(server.activeClients)
+        #clients.del(i)
+        #c.socket.close()
+       # break
+    #return true
+  while true:
+    {.locks: [glock].}:
+      if die:
         break
-    return true
-
-  while not die:
-    server.closedClientIds.iterAndMutate(deleteClientById)
+    #server.closedClientIds.iterAndMutate(deleteClientById)
     var client: Socket
     try:
       client = newSocket()
       server.socket.accept(client)
-      var clientId = server.clientsCounter
-      inc(server.clientsCounter)
-      inc(server.activeClients)
-      clients.add((client, clientId))
+      #var clientId = server.clientsCounter
+      #inc(server.clientsCounter)
+      #inc(server.activeClients)
+      #clients.add((client, clientId))
       debug("New client")
+      {.locks: [glock].}:
+        inc(gclientscounter)
+        echo "Clients count:",$gclientscounter
       if DEBUG:
-        processClient(server.addr, client, clientId)
+        processClient(client)
       else:
-        spawn processClient(server.addr, client, clientId)
+        spawn processClient(client)
     except:
-      echo "exception accept",$client.getSocketError()
-      #closeClient(server.addr, nil, client)
+      echo "exception in serve:",$client.getSocketError()
+      closeClient(client)
   #die
   echo "die server"
-  for i, c in clients:
-    c.socket.close()
   server.socket.close()
   echo "exit"
 

@@ -108,4 +108,4 @@ proc get*(socket: Socket, key:string):string  =
 proc quit*(socket: Socket) =
   ## close current session
   socket.send("quit" & NL)
-  #socket.close()
+  socket.close()

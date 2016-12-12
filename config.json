@@ -5,7 +5,7 @@
   "debug": false,
   "expectation" : {
     "keyMaxSize": 30,
-    "valueMaxSize": 800,
+    "valueMaxSize": 2000,
     "cmdGetBatchSize": 1000
   },
   "replicationAddress": "",
