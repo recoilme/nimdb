@@ -719,6 +719,7 @@ proc parseLine(client: Socket, line: string):bool =
     else:
       debug("Unknown command: " & command)
       sendStatus(client,Status.error)
+      result = true
   return result
 
 proc processClient(client: Socket) =
@@ -933,7 +934,7 @@ proc serve*(conf:Config) =
 
   var server = newServer()# global var?
   server.socket = newSocket(domain = AF_INET, sockType = SOCK_STREAM,
-    protocol = IPPROTO_TCP, buffered = true)
+    protocol = IPPROTO_TCP, buffered = false)
   setSockOpt(server.socket, OptReuseAddr, true)
   setSockOpt(server.socket, OptReusePort, true)
   server.socket.bindAddr(Port(conf.port),conf.address)
@@ -956,7 +957,10 @@ proc serve*(conf:Config) =
     #server.closedClientIds.iterAndMutate(deleteClientById)
     var client: Socket
     try:
-      client = newSocket()
+      client = newSocket(domain = AF_INET, sockType = SOCK_STREAM,
+    protocol = IPPROTO_TCP, buffered = false)
+      setSockOpt(client, OptReuseAddr, true)
+      setSockOpt(client, OptReusePort, true)
       server.socket.accept(client)
       #var clientId = server.clientsCounter
       #inc(server.clientsCounter)
