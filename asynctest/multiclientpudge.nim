@@ -1,6 +1,8 @@
 import net, threadpool, times,
   ../pudgeclient,
-  random
+  random,
+  os
+
 {.experimental.}
 
 const NL = chr(13) & chr(10)
@@ -30,19 +32,28 @@ proc newTaskSync(task:int) =
 proc mainAsync()=
   echo "start"
   var t = toSeconds(getTime())
-  parallel:
-    for i in 0..9:
-      spawn newTaskAsync(i)
+  for j in 1..1000:
+    t = toSeconds(getTime())
+    parallel:
+      for i in 0..9:
+        spawn newTaskAsync(i)
+    
+    echo "Read time [s] ", $(toSeconds(getTime()) - t)  
+    echo "sleep 10 sec"
+    sleep(10000)
   echo "end"
-  echo "Read time [s] ", $(toSeconds(getTime()) - t)    
+    
 
 proc mainSync()=
   echo "start"
   var t = toSeconds(getTime())
-  parallel:
-    for i in 1..1:
-      spawn newTaskSync(i)
+  for j in 1..1000:
+    parallel:
+      for i in 1..1:
+        spawn newTaskSync(i)
+    sleep(10000)
   echo "end"
   echo "Read time [s] ", $(toSeconds(getTime()) - t) 
+
 
 mainAsync()
