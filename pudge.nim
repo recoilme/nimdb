@@ -733,7 +733,7 @@ proc parseLine(client: Socket, line: string):bool =
 proc acceptconn(server:Socket): Socket =
     result = createSocket()
     try:
-      debug("New client: trying accept")
+      debug("New thread: wait for connection")
       server.accept(result,{})
       debug("New client: accepted")
       {.locks: [glock].}:
@@ -956,6 +956,8 @@ proc serve*(conf:Config) =
 
   var server = newServer()# global var?
   server.socket = createSocket()
+  #setSockOpt(server.socket, OptReuseAddr, true)
+  #setSockOpt(server.socket, OptReusePort, true)
   
   server.socket.bindAddr(Port(conf.port),conf.address)
   server.socket.listen()

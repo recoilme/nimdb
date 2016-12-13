@@ -36,9 +36,7 @@ const NL = chr(13) & chr(10)
 
 proc createSocket*():Socket =
   var socket = newSocket(domain = AF_INET, sockType = SOCK_STREAM,
-    protocol = IPPROTO_TCP, buffered = true)
-  setSockOpt(socket, OptReuseAddr, true)
-  setSockOpt(socket, OptReusePort, true)
+    protocol = IPPROTO_TCP, buffered = false)
   return socket
 
 proc newClient*(host: string = "127.0.0.1", port: int = 11213): Socket =
