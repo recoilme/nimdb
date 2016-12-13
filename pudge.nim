@@ -35,6 +35,9 @@
 ##   #where 5 - size in bytes
 ##   #value on next line
 ##   #end
+##   
+##   gracefully stop server from command line: 
+##   echo die|nc 0 11213 && nc 0 11213
 ##
 ## Or use any driver with memcached text protocol 
 ## support: https://github.com/memcached/memcached/blob/master/doc/protocol.txt
@@ -57,6 +60,8 @@ import
   parseopt,
   sequtils,
   sharedlist
+
+{.experimental.}
 
 # types
 type 
@@ -186,23 +191,21 @@ proc newServer(): Server =
 proc debug(msg:string) =
   #if DEBUG:
   acquire(L)
-  echo $msg
+  echo getDateStr() & " " & getClockStr() & ":\t" & $msg
   release(L)
 
 proc closeClient(client: Socket) =
+  if client == nil:
+    return
   try:
     client.close()
     debug("client closed")
     {.locks: [glock].}:
       dec(gclientscounter)
-      echo "Clients count:",$gclientscounter
+      debug("Clients count:" & $gclientscounter)
   except:
     debug("error closing client")
     debug($client.getSocketError())
-  #if context!=nil:
-    #for s in context.subscribers:
-      #s.socket.close()
-  #server.closedClientIds.add(context.clientId)
 
 proc sendStatus(client: Socket,status: Status):void=
   if not client.trySend($status & NL):
@@ -727,15 +730,26 @@ proc parseLine(client: Socket, line: string):bool =
       result = true
   return result
 
-proc processClient(client: Socket) =
-  #var context = Context(subscribers: @[], clientId: clientId)
-  #try:
-    #if replicationAddress[].len > 0 and replicationPort > 0:
-      #var socket: Socket = newClient(replicationAddress[], replicationPort)
-      #var subscriber = Subscriber(socket: socket, address: replicationAddress[], port: replicationPort, retryCooldown: 0)
-      #context.subscribers.add(subscriber)
-  #except:
-    #debug("error connect to repica " & replicationAddress[] & ":" & $replicationPort)
+proc acceptconn(server:Socket): Socket =
+    result = createSocket()
+    try:
+      debug("New client: trying accept")
+      server.accept(result,{})
+      debug("New client: accepted")
+      {.locks: [glock].}:
+        inc(gclientscounter)
+        debug("Clients accepted:" & $gclientscounter)
+    except:
+      debug("exception in serve (accept):")
+      debug($result.getSocketError())
+      closeClient(result)
+      result = nil
+    return result
+
+proc processClient(sock:Socket) =
+  var client = acceptconn(sock)
+  if client == nil:
+      return
   while true:
     #check on die cmd before listen
     {.locks: [glock].}:
@@ -930,6 +944,7 @@ proc readCfg*():Config  =
     sphList.add(SophiaParams(key:"db",val:"db"))
     return Config(address: "127.0.0.1", port: 11213, debug:false, sophiaParams : sphList)
 
+
 proc serve*(conf:Config) =
   ## run server with Config
   initVars(conf)
@@ -940,51 +955,26 @@ proc serve*(conf:Config) =
     syncWithMaster(conf.masterAddress, conf.masterPort)
 
   var server = newServer()# global var?
-  server.socket = newSocket(domain = AF_INET, sockType = SOCK_STREAM,
-    protocol = IPPROTO_TCP, buffered = false)
-  setSockOpt(server.socket, OptReuseAddr, true)
-  setSockOpt(server.socket, OptReusePort, true)
+  server.socket = createSocket()
+  
   server.socket.bindAddr(Port(conf.port),conf.address)
   server.socket.listen()
   echo("Server initialised!")
 
   var clients: seq[tuple[socket: Socket, clientId: int]] = @[]
-  #proc deleteClientById(clientId: int): bool = 
-    #for i, c in clients:
-      #if c.clientId == clientId:
-        #dec(server.activeClients)
-        #clients.del(i)
-        #c.socket.close()
-       # break
-    #return true
   while true:
     {.locks: [glock].}:
       if die:
         break
-    #server.closedClientIds.iterAndMutate(deleteClientById)
-    var client: Socket
-    try:
-      client = newSocket(domain = AF_INET, sockType = SOCK_STREAM,
-    protocol = IPPROTO_TCP, buffered = false)
-      setSockOpt(client, OptReuseAddr, true)
-      setSockOpt(client, OptReusePort, true)
-      server.socket.accept(client)
-      #var clientId = server.clientsCounter
-      #inc(server.clientsCounter)
-      #inc(server.activeClients)
-      #clients.add((client, clientId))
-      debug("New client")
-      {.locks: [glock].}:
-        inc(gclientscounter)
-        echo "Clients count:",$gclientscounter
-      if DEBUG:
-        processClient(client)
-      else:
-        spawn processClient(client)
-    except:
-      debug("exception in serve:")
-      debug($client.getSocketError())
-      closeClient(client)
+
+    var client:Socket = nil
+    if DEBUG:
+      processClient(server.socket)
+    else:
+      #TODO why parallel work not parallel?
+      #parallel:
+      spawn processClient(server.socket)
+
   #die
   echo "die server"
   server.socket.close()

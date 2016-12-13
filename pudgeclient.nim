@@ -34,10 +34,19 @@ import net, strutils
 
 const NL = chr(13) & chr(10)
 
+proc createSocket*():Socket =
+  var socket = newSocket(domain = AF_INET, sockType = SOCK_STREAM,
+    protocol = IPPROTO_TCP, buffered = true)
+  setSockOpt(socket, OptReuseAddr, true)
+  setSockOpt(socket, OptReusePort, true)
+  return socket
+
 proc newClient*(host: string = "127.0.0.1", port: int = 11213): Socket =
-  result = newSocket()
+  result = createSocket()
   try:
     result.connect("127.0.0.1", Port(port))
+    #setSockOpt(result, OptReuseAddr, true)
+    #setSockOpt(result, OptReusePort, true)
   except:
     raise newException(IOError, "Couldn't connect to server")
   return result
