@@ -948,6 +948,7 @@ proc readCfg*():Config  =
 proc serve*(conf:Config) =
   ## run server with Config
   initVars(conf)
+  setMaxPoolSize(200)
   var replicationAddressCopy = conf.replicationAddress
   replicationAddress = replicationAddressCopy.addr
 
@@ -974,8 +975,8 @@ proc serve*(conf:Config) =
       processClient(server.socket)
     else:
       #TODO why parallel work not parallel?
-      #parallel:
-      spawn processClient(server.socket)
+      parallel:
+        spawn processClient(server.socket)
 
   #die
   echo "die server"
