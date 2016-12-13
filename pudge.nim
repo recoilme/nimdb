@@ -197,7 +197,8 @@ proc closeClient(client: Socket) =
       dec(gclientscounter)
       echo "Clients count:",$gclientscounter
   except:
-    echo "error closing client",$client.getSocketError()
+    debug("error closing client")
+    debug($client.getSocketError())
   #if context!=nil:
     #for s in context.subscribers:
       #s.socket.close()
@@ -303,6 +304,7 @@ proc processGet(client: Socket,params: seq[string]):void=
       try:
         discard client.send(buffer, bufferPos)
       except:
+        debug("err in get, send")
         closeClient(client)
         break
       finally:
@@ -359,6 +361,7 @@ proc processGet(client: Socket,params: seq[string]):void=
   try:
     discard client.send(buffer, bufferPos)
   except:
+    debug("err in get")
     closeClient(client)
   finally:
     dealloc(buffer)
@@ -653,6 +656,7 @@ proc processKeyValues(client: Socket, params: seq[string]): void =
       try:
         discard client.send(buffer, bufferPos)
       except:
+        debug("err in processKeyValues")
         closeClient(client)
       finally:
         bufferPos = 0
@@ -669,6 +673,7 @@ proc processKeyValues(client: Socket, params: seq[string]): void =
   try:
     discard client.send(buffer, bufferPos)
   except:
+    debug("err in processKeyValues2")
     closeClient(client)
   finally:
     dealloc(buffer)
@@ -719,6 +724,7 @@ proc parseLine(client: Socket, line: string):bool =
     else:
       debug("Unknown command: " & command)
       sendStatus(client,Status.error)
+      result = true
   return result
 
 proc processClient(client: Socket) =
@@ -738,8 +744,9 @@ proc processClient(client: Socket) =
     var line {.inject.}: TaintedString = ""
     try:
       readLine(client, line)
-    except OSError:
-      echo "exception in readline",$client.getSocketError()
+    except:
+      debug("exception in readline:")
+      debug($client.getSocketError())
       break  
     # dont process data if die cmd
     {.locks: [glock].}:
@@ -771,6 +778,7 @@ proc syncWithMaster(masterAddress: string, masterPort: int) =
         size = parseInt(params[params.len-1])
         key = params[1]
       except:
+        debug("err in sync")
         break
       
       let diff = size - bufferLen
@@ -933,7 +941,7 @@ proc serve*(conf:Config) =
 
   var server = newServer()# global var?
   server.socket = newSocket(domain = AF_INET, sockType = SOCK_STREAM,
-    protocol = IPPROTO_TCP, buffered = true)
+    protocol = IPPROTO_TCP, buffered = false)
   setSockOpt(server.socket, OptReuseAddr, true)
   setSockOpt(server.socket, OptReusePort, true)
   server.socket.bindAddr(Port(conf.port),conf.address)
@@ -956,7 +964,10 @@ proc serve*(conf:Config) =
     #server.closedClientIds.iterAndMutate(deleteClientById)
     var client: Socket
     try:
-      client = newSocket()
+      client = newSocket(domain = AF_INET, sockType = SOCK_STREAM,
+    protocol = IPPROTO_TCP, buffered = false)
+      setSockOpt(client, OptReuseAddr, true)
+      setSockOpt(client, OptReusePort, true)
       server.socket.accept(client)
       #var clientId = server.clientsCounter
       #inc(server.clientsCounter)
@@ -971,7 +982,8 @@ proc serve*(conf:Config) =
       else:
         spawn processClient(client)
     except:
-      echo "exception in serve:",$client.getSocketError()
+      debug("exception in serve:")
+      debug($client.getSocketError())
       closeClient(client)
   #die
   echo "die server"
