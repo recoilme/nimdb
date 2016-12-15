@@ -38,28 +38,16 @@
       "val": 1
     },
     {
-      "key": "db",
-      "val": "cache"
-    },
-    {
-      "key": "db.cache.storage",
-      "val": "in-memory"
-    },
-    {
-      "key": "db.cache.cache_mode",
-      "val": 1
-    },
-    {
-      "key": "db.cache.lru",
+      "key": "memory.anticache",
       "val": 1073741824
     },
     {
-      "key": "db.cache.amqf",
-      "val": 1
+      "key": "db.db.storage",
+      "val": "anti-cache"
     },
     {
-      "key": "db.db.cache",
-      "val": "cache"
+      "key": "compaction.0.anticache_period",
+      "val": 60
     }
   ]
 }
