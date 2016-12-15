@@ -755,7 +755,7 @@ proc acceptconn(server:Socket): Socket =
       result = nil
     return result
 
-proc processClient(client:Socket) =
+proc processClient(client:Socket, config: Config) =
   while true:
     #check on die cmd before listen
     {.locks: [glock].}:
@@ -1017,7 +1017,7 @@ proc serve*(conf:Config) =
       let client = acceptconn(server.socket)
       if client != nil:
         #parallel:
-        spawn processClient(client)
+        spawn processClient(client, conf)
 
   #die
   echo "die server"
