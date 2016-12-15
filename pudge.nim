@@ -330,9 +330,10 @@ proc processGet(client: Socket,params: seq[string]):void=
               buffer = resize(buffer, bufferLen)
 
       of Engine.engSophia:
+        var t = env.begin
         var o = document(db)
         discard o.setstring("key".cstring, addr key[0], (key.len).cint)
-        o = db.get(o)
+        o = t.get(o)
         if (o != nil):
           var size:cint = 0
           var valPointer = cast[ptr array[0,char]](o.getstring("value".cstring, addr size))
@@ -353,6 +354,7 @@ proc processGet(client: Socket,params: seq[string]):void=
           bufferPos += NL.len
 
           discard destroy(o)
+        discard t.commit
 
   let diff = GET_CMD_ENDING.len - (bufferLen - bufferPos)
   if diff > 0:

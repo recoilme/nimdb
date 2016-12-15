@@ -14,7 +14,7 @@ proc newTaskAsync(task:int) =
   echo $start," :",$endd
   randomize()
   for i in start..endd:
-    let rnd = random(1_000_000)+1
+    let rnd = random(100_000)+1
     let res = socket.get($rnd)
     #echo $i
   socket.quit()
