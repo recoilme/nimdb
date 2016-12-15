@@ -746,8 +746,7 @@ proc acceptconn(server:Socket): Socket =
       result = nil
     return result
 
-proc processClient(sock:Socket) =
-  var client = acceptconn(sock)
+proc processClient(client:Socket) =
   if client == nil:
       return
   while true:
@@ -956,8 +955,8 @@ proc serve*(conf:Config) =
 
   var server = newServer()# global var?
   server.socket = createSocket()
-  #setSockOpt(server.socket, OptReuseAddr, true)
-  #setSockOpt(server.socket, OptReusePort, true)
+  setSockOpt(server.socket, OptReuseAddr, true)
+  setSockOpt(server.socket, OptReusePort, true)
   
   server.socket.bindAddr(Port(conf.port),conf.address)
   server.socket.listen()
@@ -969,10 +968,13 @@ proc serve*(conf:Config) =
       if die:
         break
 
-    var client:Socket = nil
     if DEBUG:
       processClient(server.socket)
     else:
+      let client = acceptconn(server.socket)
+      if client != nil:
+        #parallel:
+        spawn processClient(client)
       #TODO why parallel work not parallel?
       #parallel:
       spawn processClient(server.socket)
