@@ -24,7 +24,7 @@ proc newTaskSync(task:int) =
   randomize()
   
   for i in 0..1_000_000:
-    let rnd = random(1_000_000)+1
+    let rnd = random(100_000)+1
     let res = socket.get($rnd)
     #echo $rnd
   socket.quit()
@@ -32,12 +32,12 @@ proc newTaskSync(task:int) =
 proc mainAsync()=
   echo "start"
   var t = toSeconds(getTime())
-  for j in 1..1000:
+  for j in 1..5:
     t = toSeconds(getTime())
     parallel:
       for i in 0..9:
         spawn newTaskAsync(i)
-    
+  
     echo "Read time [s] ", $(toSeconds(getTime()) - t)  
     echo "sleep 10 sec"
     sleep(10000)

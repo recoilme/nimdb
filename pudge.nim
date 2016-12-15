@@ -746,10 +746,7 @@ proc acceptconn(server:Socket): Socket =
       result = nil
     return result
 
-proc processClient(sock:Socket) =
-  var client = acceptconn(sock)
-  if client == nil:
-      return
+proc processClient(client:Socket) =
   while true:
     #check on die cmd before listen
     {.locks: [glock].}:
@@ -957,8 +954,8 @@ proc serve*(conf:Config) =
 
   var server = newServer()# global var?
   server.socket = createSocket()
-  #setSockOpt(server.socket, OptReuseAddr, true)
-  #setSockOpt(server.socket, OptReusePort, true)
+  setSockOpt(server.socket, OptReuseAddr, true)
+  setSockOpt(server.socket, OptReusePort, true)
   
   server.socket.bindAddr(Port(conf.port),conf.address)
   server.socket.listen()
@@ -975,8 +972,10 @@ proc serve*(conf:Config) =
       processClient(server.socket)
     else:
       #TODO why parallel work not parallel?
-      parallel:
-        spawn processClient(server.socket)
+      let client = acceptconn(server.socket)
+      if client != nil:
+        #parallel:
+        spawn processClient(client)
 
   #die
   echo "die server"

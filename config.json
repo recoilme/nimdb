@@ -15,7 +15,7 @@
   "sophiaParams": [
     {
       "key": "sophia.path",
-      "val": "./sophia"
+      "val": "./sophia21"
     },
     {
       "key": "db",
@@ -38,12 +38,16 @@
       "val": 1
     },
     {
-      "key": "db.db.expire",
-      "val": 0
+      "key": "memory.anticache",
+      "val": 1073741824
     },
     {
-      "key": "db.db.compaction.expire_period",
-      "val": 36000
+      "key": "db.db.storage",
+      "val": "anti-cache"
+    },
+    {
+      "key": "compaction.0.anticache_period",
+      "val": 60
     }
   ]
 }

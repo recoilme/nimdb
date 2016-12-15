@@ -13,7 +13,7 @@ proc runServer(conf:Config):Future[void] {.async.} =
 suite "test suite for pudge":
   setup:
     let result = 4
-    var size = 10000
+    var size = 1000000
     const bytes = 800
     const content = repeatStr(bytes-7, "x")
     var conf: Config = readCfg()
