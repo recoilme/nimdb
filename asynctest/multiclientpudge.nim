@@ -32,7 +32,7 @@ proc newTaskSync(task:int) =
 proc mainAsync()=
   echo "start"
   var t = toSeconds(getTime())
-  for j in 1..5:
+  for j in 1..20:
     t = toSeconds(getTime())
     parallel:
       for i in 0..9:
