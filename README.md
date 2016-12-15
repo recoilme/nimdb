@@ -20,6 +20,13 @@ Build from source:
 git clone https://github.com/recoilme/pudge.git
 nimble install yaml
 nim c pudge.nim
+
+Buld sophia 2.1 branch:
+git clone -b v2.1 https://github.com/pmwkaa/sophia.git
+cd sophia/
+make
+g++ -dynamiclib -undefined suppress -flat_namespace sophia.o -o libsophia.dylib #macos
+#copy to libs folder
 ```
 Start with the custom configuration:
 ```
