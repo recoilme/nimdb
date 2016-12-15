@@ -330,9 +330,10 @@ proc processGet(client: Socket,params: seq[string]):void=
               buffer = resize(buffer, bufferLen)
 
       of Engine.engSophia:
+        var t = env.begin
         var o = document(db)
         discard o.setstring("key".cstring, addr key[0], (key.len).cint)
-        o = db.get(o)
+        o = t.get(o)
         if (o != nil):
           var size:cint = 0
           var valPointer = cast[ptr array[0,char]](o.getstring("value".cstring, addr size))
@@ -353,6 +354,7 @@ proc processGet(client: Socket,params: seq[string]):void=
           bufferPos += NL.len
 
           discard destroy(o)
+        discard t.commit
 
   let diff = GET_CMD_ENDING.len - (bufferLen - bufferPos)
   if diff > 0:
@@ -747,8 +749,6 @@ proc acceptconn(server:Socket): Socket =
     return result
 
 proc processClient(client:Socket) =
-  if client == nil:
-      return
   while true:
     #check on die cmd before listen
     {.locks: [glock].}:
@@ -947,6 +947,7 @@ proc readCfg*():Config  =
 proc serve*(conf:Config) =
   ## run server with Config
   initVars(conf)
+  setMaxPoolSize(200)
   var replicationAddressCopy = conf.replicationAddress
   replicationAddress = replicationAddressCopy.addr
 
@@ -968,16 +969,15 @@ proc serve*(conf:Config) =
       if die:
         break
 
+    var client:Socket = nil
     if DEBUG:
       processClient(server.socket)
     else:
+      #TODO why parallel work not parallel?
       let client = acceptconn(server.socket)
       if client != nil:
         #parallel:
         spawn processClient(client)
-      #TODO why parallel work not parallel?
-      #parallel:
-      spawn processClient(server.socket)
 
   #die
   echo "die server"
