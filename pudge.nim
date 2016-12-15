@@ -951,27 +951,33 @@ proc readCfg*():Config  =
     return Config(address: "127.0.0.1", port: 11213, debug:false, sophiaParams : sphList)
 
 proc replicationThread(replicaAddr: tuple[host: string, port: int]): void =
-  var socket: Socket = newClient(replicaAddr.host, replicaAddr.port)
-  while true:
-    var msg = replicationChannel.recv()
-    try:
-      let status = 
-        case msg.cmd:
-          of Cmd.cmdSet:
-            socket.setNoreply(msg.key, msg.value)
-          of Cmd.cmdDelete:
-            socket.deleteNoreply(msg.key)
-          else:
-            debug("Unsupported replication cmd" & $msg.cmd)
-            0
-      if status < 0:
-        debug("Replica connection error, reconnect...")
+  try:
+    var socket: Socket = newClient(replicaAddr.host, replicaAddr.port)
+    while true:
+      var msg = replicationChannel.recv()
+      try:
+        let status = 
+          case msg.cmd:
+            of Cmd.cmdSet:
+              socket.setNoreply(msg.key, msg.value)
+            of Cmd.cmdDelete:
+              socket.deleteNoreply(msg.key)
+            else:
+              debug("Unsupported replication cmd" & $msg.cmd)
+              0
+        if status < 0:
+          debug("Replica connection error, reconnect...")
+          socket = newClient(replicaAddr.host, replicaAddr.port)
+      except IOError:
+        # TODO: looks like replica is down. 
+        # Save all messages to the disk and resend they after successfull connection
+        debug("Replica communication IO error, reconnect...")
         socket = newClient(replicaAddr.host, replicaAddr.port)
-    except IOError:
-      # TODO: looks like replica is down. 
-      # Save all messages to the disk and resend they after successfull connection
-      debug("Replica communication IO error, reconnect...")
-      socket = newClient(replicaAddr.host, replicaAddr.port)
+  except:
+    let
+      e = getCurrentException()
+      msg = getCurrentExceptionMsg()
+    debug("Replication thread failed with exception " & repr(e) & " with message: " & msg)      
 
 proc serve*(conf:Config) =
   ## run server with Config
