@@ -59,7 +59,8 @@ import
   pudgeclient,
   parseopt,
   sequtils,
-  sharedlist
+  sharedlist,
+  selectors
 
 {.experimental.}
 
@@ -748,7 +749,7 @@ proc acceptconn(server:Socket): Socket =
       result = nil
     return result
 
-proc processClient(client:Socket) =
+proc processClient(client:Socket) {.thread.} =
   while true:
     #check on die cmd before listen
     {.locks: [glock].}:
@@ -773,7 +774,7 @@ proc processClient(client:Socket) =
       #It seems sock received "", this it means connection has been closed.
       debug("sock received ''")
       break
-  closeClient(client)
+  closeClient(client) 
 
 proc syncWithMaster(masterAddress: string, masterPort: int) =
   var socket = newClient(masterAddress, masterPort)
@@ -943,11 +944,53 @@ proc readCfg*():Config  =
     sphList.add(SophiaParams(key:"db",val:"db"))
     return Config(address: "127.0.0.1", port: 11213, debug:false, sophiaParams : sphList)
 
+proc handle(client: Socket) =
+  # TaintedString is used for strings coming from the outside, security mechanism.
+  # The below is equivalent to TaintedString(r"") and TaintedString is a distinct type
+  # of the type string. The "r" means a raw string.
+  var buf = TaintedString""
+  # Using try:finally: to make sure we close the client Socket
+  # even if some exception is raised
+  while true:
+    try:
+      # Just read one line... and then send our premade response 
+      client.readLine(buf, timeout = 2000)
+      if buf != "":
+        client.send("response" & NL)
+      else:
+        break
+    except:
+      # We may end up here if readLine above times out for example,
+      # we just ignore (no raise to propagate further) and close.
+      break
+  closeClient(client)
+
+# Eternal loop where we use the new selectors API.
+# If we get an event on the listening socket
+# we create a new Socket and accept the connection
+# into it. Then we spawn the handle proc.
+proc loop(self: Server) =
+  # Create a Selector - cross platform abstraction for polling events.
+  var selector = newSelector()
+  # Register our listener socket's file descriptor, the events we want to wait for
+  # and an optional user object associated with this file descriptor - we just use nil
+  # since we are only listening on one Socket.
+  selector.register(self.socket.getFD, {EvRead}, nil)
+  while true:
+    # Ask selector to wait up to 1 second, did we actually get a connection?
+    if selector.select(1000).len > 0:
+      # Socket is a ref object, so "Socket()" will allocate it on the heap.
+      # Perhaps a bit needless since we will deepCopy it two lines down in spawn.
+      var client: Socket = acceptconn(self.socket)
+      # Spawn it off into the new threadpool - nifty stuff. It is a self adapting
+      # thread pool that checks number of cores etc. The argument is deepCopied over
+      # ensuring threads do not share data.
+      if client!= nil:
+        spawn handle(client)
 
 proc serve*(conf:Config) =
   ## run server with Config
   initVars(conf)
-  setMaxPoolSize(200)
   var replicationAddressCopy = conf.replicationAddress
   replicationAddress = replicationAddressCopy.addr
 
@@ -963,6 +1006,8 @@ proc serve*(conf:Config) =
   server.socket.listen()
   echo("Server initialised!")
 
+  loop(server)
+  #[
   var clients: seq[tuple[socket: Socket, clientId: int]] = @[]
   while true:
     {.locks: [glock].}:
@@ -974,7 +1019,7 @@ proc serve*(conf:Config) =
       processClient(server.socket)
     else:
       #TODO why parallel work not parallel?
-      let client = acceptconn(server.socket)
+      client = acceptconn(server.socket)
       if client != nil:
         #parallel:
         spawn processClient(client)
@@ -982,7 +1027,7 @@ proc serve*(conf:Config) =
   #die
   echo "die server"
   server.socket.close()
-  echo "exit"
+  echo "exit"]#
 
 
 when isMainModule:
