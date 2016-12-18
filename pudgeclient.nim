@@ -30,17 +30,18 @@
 ##
 ## see test.nim
 
-import net, strutils
+import net, strutils, asyncnet
 
 const NL = chr(13) & chr(10)
 
-proc createSocket*():Socket =
-  var socket = newSocket(domain = AF_INET, sockType = SOCK_STREAM,
+proc createSocket*():AsyncSocket =
+  var socket = newAsyncSocket(domain = AF_INET, sockType = SOCK_STREAM,
     protocol = IPPROTO_TCP, buffered = false)
   return socket
 
 proc newClient*(host: string = "127.0.0.1", port: int = 11213): Socket =
-  result = createSocket()
+  result = newSocket(domain = AF_INET, sockType = SOCK_STREAM,
+    protocol = IPPROTO_TCP, buffered = false)
   try:
     result.connect("127.0.0.1", Port(port))
     #setSockOpt(result, OptReuseAddr, true)

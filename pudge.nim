@@ -44,7 +44,6 @@
 
 import
   asyncdispatch,
-  net,
   strutils,
   tables,
   sophia,
@@ -59,20 +58,21 @@ import
   pudgeclient,
   parseopt,
   sequtils,
-  sharedlist
+  sharedlist,
+  asyncnet
 
 {.experimental.}
 
 # types
 type 
   Server = ref object
-    socket  : Socket
+    socket  : AsyncSocket
     #closedClientIds : SharedList[int]
     #clientsCounter: int # only incremented
     #activeClients: int
     
   Subscriber = ref object
-    socket: Socket
+    socket: AsyncSocket
     address: string
     port: int
     retryCooldown: int
@@ -156,7 +156,7 @@ var env : pointer
 var db : pointer
 var L: Lock
 
-proc processSubscribers( process: proc(s: Socket): int) =
+proc processSubscribers( process: proc(s: AsyncSocket): int) =
   let dummy=0
   #echo("unimplemented")
   #[
@@ -187,7 +187,7 @@ proc processSubscribers( process: proc(s: Socket): int) =
         ]#
 proc newServer(): Server =
   ## Constructor for creating a new ``Server``.
-  Server(socket: newSocket())#, closedClientIds: initSharedList[int](), clientsCounter: 0, activeClients: 0)
+  Server(socket: nil)#, closedClientIds: initSharedList[int](), clientsCounter: 0, activeClients: 0)
 
 
 proc debug(msg:string) =
@@ -196,7 +196,7 @@ proc debug(msg:string) =
   echo getDateStr() & " " & getClockStr() & ":\t" & $msg
   release(L)
 
-proc closeClient(client: Socket) =
+proc closeClient(client: AsyncSocket) =
   if client == nil:
     return
   try:
@@ -207,19 +207,19 @@ proc closeClient(client: Socket) =
       debug("Clients count:" & $gclientscounter)
   except:
     debug("error closing client")
-    debug($client.getSocketError())
+    #debug($client.getSocketError())
 
-proc sendStatus(client: Socket,status: Status):void=
-  if not client.trySend($status & NL):
-    closeClient(client)
+proc sendString(client: AsyncSocket,str: string) {.async.} =
+  asyncCheck client.send(str)
+  #if not client.trySend($str):
+    #closeClient(client)
 
-proc sendString(client: Socket,str: string):void=
-  if not client.trySend($str):
-    closeClient(client)
+proc sendStatus(client: AsyncSocket,status: Status) {.async.} =
+  asyncCheck sendString(client,$status & NL)
 
 proc hasReplica(c: Config): bool = c.replicationPort > 0
 
-proc processSet(client: Socket, config: Config, params: seq[string], asAdd: bool):void=
+proc processSet(client: AsyncSocket, config: Config, params: seq[string], asAdd: bool) {.async}=
   ## set command example
   ## set key 0 0 5\10\13value\10\13
   ## Response: STORED or ERROR
@@ -230,7 +230,7 @@ proc processSet(client: Socket, config: Config, params: seq[string], asAdd: bool
   ## <nothing responds>
   if params.len<5:
     debug("wrong params for set command")
-    sendStatus(client, Status.notStored)
+    asyncCheck sendStatus(client, Status.notStored)
     return
   var key:string = params[1]
   var size:int
@@ -239,21 +239,22 @@ proc processSet(client: Socket, config: Config, params: seq[string], asAdd: bool
     if params[5] == "noreply":
       noreply = true
     else:
-      sendStatus(client, Status.error)
+      asyncCheck sendStatus(client, Status.error)
       return  
 
   try:
     size = parseInt(params[4])
   except:
     debug("error parse size")
-    sendStatus(client, Status.notStored)
+    asyncCheck sendStatus(client, Status.notStored)
     return
   if size == 0:
     discard client.recvLine()
-    sendStatus(client, Status.notStored)
+    asyncCheck sendStatus(client, Status.notStored)
     return
   #NL
-  var val:string =(client.recv(size+2)).substr(0,size-1)
+  var ll:string = await client.recv(size+2) 
+  var val:string =ll.substr(0,size-1)
   case CUR_ENGINE:
     of Engine.engMemory:
       #{.locks: [glock].}:
@@ -262,14 +263,14 @@ proc processSet(client: Socket, config: Config, params: seq[string], asAdd: bool
           #gdata.del(key)
         #gdata.add(key,val)
       if client != nil :
-        sendStatus(client, Status.stored)
+        asyncCheck sendStatus(client, Status.stored)
     of Engine.engSophia:
       var o = document(db)
       discard o.setstring("key".cstring, addr key[0], (key.len).cint)
       if asAdd:
         var res = db.get(o)
         if res != nil:
-          sendStatus(client, Status.notStored)
+          asyncCheck sendStatus(client, Status.notStored)
           discard destroy(res)
           return
         else:
@@ -280,19 +281,19 @@ proc processSet(client: Socket, config: Config, params: seq[string], asAdd: bool
       if (rc == -1):
         debug("Sophia write error for " & key)
         if not noreply:
-          sendStatus(client, Status.notStored)
+          asyncCheck sendStatus(client, Status.notStored)
       else:
         if not noreply:
-          sendStatus(client, Status.stored)
+          asyncCheck sendStatus(client, Status.stored)
         if config.hasReplica:
           # processSubscribers( proc(s: Socket): int = setNoreply(s, key, val))
           replicationChannel.send(RepMsg(key: key, value: val, cmd: Cmd.cmdSet))
     else:
       if client != nil:
-        sendStatus(client, Status.notStored)
+        asyncCheck sendStatus(client, Status.notStored)
 
 
-proc processGet(client: Socket,params: seq[string]):void=
+proc processGet(client: AsyncSocket,params: seq[string]):void=
   ## get key [key2] [key3] .. [keyn]
   ## response example:
   ## VALUE key 0 5
@@ -302,7 +303,7 @@ proc processGet(client: Socket,params: seq[string]):void=
   ## NOTE: if key contains '*' character then command processed like a KEYVALUES command (see processKeyValues)
   if params.len<2:
     debug("wrong params for get command")
-    sendStatus(client, Status.error)
+    asyncCheck sendStatus(client, Status.error)
     return
   var bufferLen = (20 + keyMaxSize + valueMaxSize) * min(cmdGetBatchSize, params.len - 1) 
   var bufferPos = 0 
@@ -376,14 +377,14 @@ proc processGet(client: Socket,params: seq[string]):void=
   finally:
     dealloc(buffer)
 
-proc processDelete(client: Socket, config: Config, params: seq[string]): void =
+proc processDelete(client: AsyncSocket, config: Config, params: seq[string]): void =
   ## delete key [noreply]
   ## response variants:
   ## DELETED
   ## NOT_FOUND
   if params.len < 2 or params.len > 3:
     debug("wrong params for delete command")
-    sendStatus(client, Status.error)
+    asyncCheck sendStatus(client, Status.error)
     return
 
   var key = params[1]
@@ -392,14 +393,14 @@ proc processDelete(client: Socket, config: Config, params: seq[string]): void =
     if params[2] == "noreply":
       noreply = true
     else:
-      sendStatus(client, Status.error)
+      asyncCheck sendStatus(client, Status.error)
       return 
 
   case CUR_ENGINE:
     of Engine.engMemory:
       # TODO: remove from memory
       if not noreply:
-        sendStatus(client, Status.notFound)
+        asyncCheck sendStatus(client, Status.notFound)
 
     of Engine.engSophia:
       if not noreply:
@@ -407,7 +408,7 @@ proc processDelete(client: Socket, config: Config, params: seq[string]): void =
         discard o.setstring("key".cstring, addr key[0], (key.len).cint)
         var res = db.get(o)
         if res == nil:
-          sendStatus(client, Status.notFound)
+          asyncCheck sendStatus(client, Status.notFound)
           return
         else:
           discard destroy(res)
@@ -422,11 +423,11 @@ proc processDelete(client: Socket, config: Config, params: seq[string]): void =
 
       if not noreply:
         if res == 0:
-          sendStatus(client, Status.deleted)
+          asyncCheck sendStatus(client, Status.deleted)
         else:
-          sendStatus(client, Status.error)
+          asyncCheck sendStatus(client, Status.error)
 
-proc processStat( client: Socket):void =
+proc processStat( client: AsyncSocket):void =
   ## example stat
   var msg = ""
   var len:int
@@ -459,13 +460,13 @@ proc processStat( client: Socket):void =
 
         o = cursor.get(o)
       discard destroy(cursor)
-      client.sendString(msg)
+      asyncCheck client.sendString(msg)
     else:
       if client != nil:
-        sendStatus(client, Status.error)
+        asyncCheck sendStatus(client, Status.error)
 
 
-proc processEnv*(client: Socket,params: seq[string]):void =
+proc processEnv*(client: AsyncSocket,params: seq[string]):void =
   ## env command param1 [param2]
   ## 
   ## get or set sophia params
@@ -518,7 +519,7 @@ proc processEnv*(client: Socket,params: seq[string]):void =
       else:
         res = $Status.error
 
-  client.sendString($res & NL)
+  asyncCheck client.sendString($res & NL)
 
 #sub 127.0.0.1 11214
 #[
@@ -562,7 +563,7 @@ proc processSub*(client: Socket,params: seq[string]):void =
       res = $Status.error
   client.send($res & NL)
 ]#
-proc processKeys(client: Socket, params: seq[string]): void = 
+proc processKeys(client: AsyncSocket, params: seq[string]): void = 
   ## Simplified analogue of Redis KEYS command. Wildcard required.
   ## For example get all db keys:
   ## KEYS * 
@@ -579,11 +580,11 @@ proc processKeys(client: Socket, params: seq[string]): void =
   ## foobaz
   ## END
   if params.len != 2:
-    sendStatus(client, Status.error)
+    asyncCheck sendStatus(client, Status.error)
     return
   var pattern = params[1]
   if pattern.len == 0 or not(pattern[pattern.len - 1] == '*'):
-    sendStatus(client, Status.error)
+    asyncCheck sendStatus(client, Status.error)
     return
   pattern = pattern.substr(0, pattern.len - 2)
 
@@ -597,12 +598,12 @@ proc processKeys(client: Socket, params: seq[string]): void =
     var keyPtr = o.getstring("key".cstring, addr size)
     var key = $(cast[ptr array[0,char]](keyPtr)[])
     key = key.substr(0, size - 1)
-    client.sendString(key & NL)
+    asyncCheck client.sendString(key & NL)
     o = cursor.get(o)
-  sendStatus(client, Status.theEnd)
+  asyncCheck sendStatus(client, Status.theEnd)
   discard destroy(cursor)
 
-proc processKeyValues(client: Socket, params: seq[string]): void = 
+proc processKeyValues(client: AsyncSocket, params: seq[string]): void = 
   ## Command for fetching huge amount of key-values by key pattern:
   ## KEYVALUES [prefix]* [minimal unixtime]
   ##
@@ -617,11 +618,11 @@ proc processKeyValues(client: Socket, params: seq[string]): void =
   ## lastvalue
   ## END
   if params.len != 2:
-    sendStatus(client, Status.error)
+    asyncCheck sendStatus(client, Status.error)
     return
   var pattern = params[1]
   if pattern.len == 0 or not(pattern[pattern.len - 1] == '*'):
-    sendStatus(client, Status.error)
+    asyncCheck sendStatus(client, Status.error)
     return
   pattern = pattern.substr(0, pattern.len - 2)
 
@@ -691,7 +692,7 @@ proc processKeyValues(client: Socket, params: seq[string]): void =
     dealloc(buffer)
     discard destroy(cursor)
 
-proc parseLine(client: Socket, config: Config, line: string):bool =
+proc parseLine(client: AsyncSocket, config: Config, line: string):bool =
   result = false
   let
     params = splitWhitespace(line & "")
@@ -699,9 +700,9 @@ proc parseLine(client: Socket, config: Config, line: string):bool =
   # debug(line)
   case command:
     of $Cmd.cmdSet:
-      processSet(client, config, params, false)
+      asyncCheck processSet(client, config, params, false)
     of $Cmd.cmdAdd:
-      processSet(client, config, params, true)
+      asyncCheck processSet(client, config, params, true)
     of $Cmd.cmdGet:
       if params.len > 1 and params[1].contains('*'):
         processKeyValues(client, params)
@@ -710,7 +711,7 @@ proc parseLine(client: Socket, config: Config, line: string):bool =
     of $Cmd.cmdDelete:
       processDelete(client, config, params)  
     of $Cmd.cmdEcho:
-      client.sendString(line & NL)
+      asyncCheck client.sendString(line & NL)
     of $Cmd.cmdStat:
       processStat(client)
     of $Cmd.cmdEnv:
@@ -724,7 +725,7 @@ proc parseLine(client: Socket, config: Config, line: string):bool =
       result = true
     of $Cmd.cmdUnknown:
       debug("Wrong protocol, line: " & line)
-      sendStatus(client,Status.error)
+      asyncCheck sendStatus(client,Status.error)
       result = true
     of $Cmd.cmdsub:
       #processSub(client, params)
@@ -735,11 +736,12 @@ proc parseLine(client: Socket, config: Config, line: string):bool =
       processKeyValues(client, params)
     else:
       debug("Unknown command: " & command)
-      sendStatus(client,Status.error)
+      asyncCheck sendStatus(client,Status.error)
       result = true
   return result
 
-proc acceptconn(server:Socket): Socket =
+#[
+proc acceptconn(server:AsyncSocket): AsyncSocket =
     result = createSocket()
     try:
       debug("New thread: wait for connection")
@@ -750,38 +752,11 @@ proc acceptconn(server:Socket): Socket =
         debug("Clients accepted:" & $gclientscounter)
     except:
       debug("exception in serve (accept):")
-      debug($result.getSocketError())
+      #debug($result.getSocketError())
       closeClient(result)
       result = nil
-    return result
-
-proc processClient(client:Socket, config: Config) =
-  while true:
-    #check on die cmd before listen
-    {.locks: [glock].}:
-      if die:
-        break
-    var line {.inject.}: TaintedString = ""
-    try:
-      readLine(client, line)
-    except:
-      debug("exception in readline:")
-      debug($client.getSocketError())
-      break  
-    # dont process data if die cmd
-    {.locks: [glock].}:
-      if die:
-        break
-    if line != "":
-      let stop = parseLine(client, config, line)
-      if stop:
-        break
-    else:
-      #It seems sock received "", this it means connection has been closed.
-      debug("sock received ''")
-      break
-  closeClient(client)
-
+    return result]#
+#[
 proc syncWithMaster(masterAddress: string, masterPort: int) =
   var socket = newClient(masterAddress, masterPort)
   var bufferLen = valueMaxSize
@@ -824,7 +799,7 @@ proc syncWithMaster(masterAddress: string, masterPort: int) =
   finally:
     dealloc(buffer)
     socket.close()
-
+]#
 proc free(obj: pointer) {.importc: "free", header: "<stdio.h>"}
 
 proc errorExit() =
@@ -950,9 +925,10 @@ proc readCfg*():Config  =
     sphList.add(SophiaParams(key:"db",val:"db"))
     return Config(address: "127.0.0.1", port: 11213, debug:false, sophiaParams : sphList)
 
+#[]
 proc replicationThread(replicaAddr: tuple[host: string, port: int]): void =
   try:
-    var socket: Socket = newClient(replicaAddr.host, replicaAddr.port)
+    var socket: AsyncSocket = newClient(replicaAddr.host, replicaAddr.port)
     while true:
       var msg = replicationChannel.recv()
       try:
@@ -978,6 +954,48 @@ proc replicationThread(replicaAddr: tuple[host: string, port: int]): void =
       e = getCurrentException()
       msg = getCurrentExceptionMsg()
     debug("Replication thread failed with exception " & repr(e) & " with message: " & msg)      
+]#
+
+proc processClient(client:AsyncSocket, config: Config) {.async.} =
+  var line:string = nil
+  while true:
+    #check on die cmd before listen
+    {.locks: [glock].}:
+      if die:
+        break
+    #var line {.inject.}: TaintedString = ""
+    #try:
+      #readLine(client, line)
+    line = await client.recvLine()
+    #except:
+      #debug("exception in readline:")
+      #debug($client.getSocketError())
+      #break  
+    # dont process data if die cmd
+    {.locks: [glock].}:
+      if die:
+        break
+    if line != "":
+      let stop = parseLine(client, config, line)
+      if stop:
+        break
+    else:
+      #It seems sock received "", this it means connection has been closed.
+      debug("sock received ''")
+      break
+  closeClient(client)
+
+proc loop(conf:Config, server:Server) {.async} =
+  while true:
+    {.locks: [glock].}:
+      if die:
+        break
+    echo "loop"
+    let client = await server.socket.accept()
+    echo "1"
+    asyncCheck processClient(client, conf)
+    echo "2"
+  echo "break"
 
 proc serve*(conf:Config) =
   ## run server with Config
@@ -986,8 +1004,8 @@ proc serve*(conf:Config) =
   var replicationAddressCopy = conf.replicationAddress
   replicationAddress = replicationAddressCopy.addr
 
-  if conf.masterAddress.len > 0 and conf.masterPort > 0:
-    syncWithMaster(conf.masterAddress, conf.masterPort)
+  #if conf.masterAddress.len > 0 and conf.masterPort > 0:
+   # syncWithMaster(conf.masterAddress, conf.masterPort)
 
   var server = newServer()# global var?
   server.socket = createSocket()
@@ -1001,15 +1019,19 @@ proc serve*(conf:Config) =
   if (conf.hasReplica):
     replicationChannel.open()
     var t: Thread[tuple[host: string, port: int]]
-    createThread(t, replicationThread, (conf.replicationAddress, conf.replicationPort.int))
-
-  var clients: seq[tuple[socket: Socket, clientId: int]] = @[]
+    #createThread(t, replicationThread, (conf.replicationAddress, conf.replicationPort.int))
+  
+  #while not die:
+  asyncCheck loop(conf,server)
+  runForever( )
+  #runForever()
+  #[
+  var clients: seq[tuple[socket: AsyncSocket, clientId: int]] = @[]
   while true:
     {.locks: [glock].}:
       if die:
         break
 
-    var client:Socket = nil
     if DEBUG:
       processClient(server.socket, conf)
     else:
@@ -1017,7 +1039,7 @@ proc serve*(conf:Config) =
       let client = acceptconn(server.socket)
       if client != nil:
         #parallel:
-        spawn processClient(client, conf)
+        spawn processClient(client, conf)]#
 
   #die
   echo "die server"
