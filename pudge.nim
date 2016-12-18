@@ -77,11 +77,6 @@ type
     port: int
     retryCooldown: int
 
-  # every connection has it's personal context
-  Context = ref object
-    subscribers   : seq[Subscriber]
-    #clientId: int
-
   SophiaParams = object
     key : string
     val : string
@@ -101,6 +96,12 @@ type
     masterPort: int32
     sophiaParams: seq[SophiaParams]
     expectation: Expectation
+
+  RepMsg = ref object
+    key   : string
+    value : string
+    cmd   : Cmd
+
 # enums
   Cmd = enum
     cmdSet = "set",
@@ -143,6 +144,7 @@ var replicationPort: int = 0
 var glock: Lock
 var die : bool# global var?
 var gclientscounter {.guard: glock.}: int
+var replicationChannel: TChannel[RepMsg]
 
 #contants
 const NL = chr(13) & chr(10)
@@ -215,8 +217,9 @@ proc sendString(client: Socket,str: string):void=
   if not client.trySend($str):
     closeClient(client)
 
+proc hasReplica(c: Config): bool = c.replicationPort > 0
 
-proc processSet(client: Socket, params: seq[string], asAdd: bool):void=
+proc processSet(client: Socket, config: Config, params: seq[string], asAdd: bool):void=
   ## set command example
   ## set key 0 0 5\10\13value\10\13
   ## Response: STORED or ERROR
@@ -281,7 +284,9 @@ proc processSet(client: Socket, params: seq[string], asAdd: bool):void=
       else:
         if not noreply:
           sendStatus(client, Status.stored)
-        processSubscribers( proc(s: Socket): int = setNoreply(s, key, val))
+        if config.hasReplica:
+          # processSubscribers( proc(s: Socket): int = setNoreply(s, key, val))
+          replicationChannel.send(RepMsg(key: key, value: val, cmd: Cmd.cmdSet))
     else:
       if client != nil:
         sendStatus(client, Status.notStored)
@@ -330,9 +335,10 @@ proc processGet(client: Socket,params: seq[string]):void=
               buffer = resize(buffer, bufferLen)
 
       of Engine.engSophia:
+        var t = env.begin
         var o = document(db)
         discard o.setstring("key".cstring, addr key[0], (key.len).cint)
-        o = db.get(o)
+        o = t.get(o)
         if (o != nil):
           var size:cint = 0
           var valPointer = cast[ptr array[0,char]](o.getstring("value".cstring, addr size))
@@ -353,6 +359,7 @@ proc processGet(client: Socket,params: seq[string]):void=
           bufferPos += NL.len
 
           discard destroy(o)
+        discard t.commit
 
   let diff = GET_CMD_ENDING.len - (bufferLen - bufferPos)
   if diff > 0:
@@ -369,7 +376,7 @@ proc processGet(client: Socket,params: seq[string]):void=
   finally:
     dealloc(buffer)
 
-proc processDelete(client: Socket, params: seq[string]): void =
+proc processDelete(client: Socket, config: Config, params: seq[string]): void =
   ## delete key [noreply]
   ## response variants:
   ## DELETED
@@ -409,7 +416,9 @@ proc processDelete(client: Socket, params: seq[string]): void =
       discard o.setstring("key".cstring, addr key[0], (key.len).cint)
       var res = db.delete(o)
 
-      processSubscribers( proc(s: Socket): int = deleteNoreply(s, key))
+      if config.hasReplica:
+        #processSubscribers( proc(s: Socket): int = deleteNoreply(s, key))
+        replicationChannel.send(RepMsg(key: key, value: nil, cmd: Cmd.cmdDelete))
 
       if not noreply:
         if res == 0:
@@ -682,7 +691,7 @@ proc processKeyValues(client: Socket, params: seq[string]): void =
     dealloc(buffer)
     discard destroy(cursor)
 
-proc parseLine(client: Socket, line: string):bool =
+proc parseLine(client: Socket, config: Config, line: string):bool =
   result = false
   let
     params = splitWhitespace(line & "")
@@ -690,16 +699,16 @@ proc parseLine(client: Socket, line: string):bool =
   # debug(line)
   case command:
     of $Cmd.cmdSet:
-      processSet(client, params, false)
+      processSet(client, config, params, false)
     of $Cmd.cmdAdd:
-      processSet(client, params, true)
+      processSet(client, config, params, true)
     of $Cmd.cmdGet:
       if params.len > 1 and params[1].contains('*'):
         processKeyValues(client, params)
       else:
         processGet(client,params)
     of $Cmd.cmdDelete:
-      processDelete(client, params)  
+      processDelete(client, config, params)  
     of $Cmd.cmdEcho:
       client.sendString(line & NL)
     of $Cmd.cmdStat:
@@ -746,10 +755,7 @@ proc acceptconn(server:Socket): Socket =
       result = nil
     return result
 
-proc processClient(sock:Socket) =
-  var client = acceptconn(sock)
-  if client == nil:
-      return
+proc processClient(client:Socket, config: Config) =
   while true:
     #check on die cmd before listen
     {.locks: [glock].}:
@@ -767,7 +773,7 @@ proc processClient(sock:Socket) =
       if die:
         break
     if line != "":
-      let stop = parseLine(client, line)
+      let stop = parseLine(client, config, line)
       if stop:
         break
     else:
@@ -944,6 +950,34 @@ proc readCfg*():Config  =
     sphList.add(SophiaParams(key:"db",val:"db"))
     return Config(address: "127.0.0.1", port: 11213, debug:false, sophiaParams : sphList)
 
+proc replicationThread(replicaAddr: tuple[host: string, port: int]): void =
+  try:
+    var socket: Socket = newClient(replicaAddr.host, replicaAddr.port)
+    while true:
+      var msg = replicationChannel.recv()
+      try:
+        let status = 
+          case msg.cmd:
+            of Cmd.cmdSet:
+              socket.setNoreply(msg.key, msg.value)
+            of Cmd.cmdDelete:
+              socket.deleteNoreply(msg.key)
+            else:
+              debug("Unsupported replication cmd" & $msg.cmd)
+              0
+        if status < 0:
+          debug("Replica connection error, reconnect...")
+          socket = newClient(replicaAddr.host, replicaAddr.port)
+      except IOError:
+        # TODO: looks like replica is down. 
+        # Save all messages to the disk and resend they after successfull connection
+        debug("Replica communication IO error, reconnect...")
+        socket = newClient(replicaAddr.host, replicaAddr.port)
+  except:
+    let
+      e = getCurrentException()
+      msg = getCurrentExceptionMsg()
+    debug("Replication thread failed with exception " & repr(e) & " with message: " & msg)      
 
 proc serve*(conf:Config) =
   ## run server with Config
@@ -957,12 +991,17 @@ proc serve*(conf:Config) =
 
   var server = newServer()# global var?
   server.socket = createSocket()
-  #setSockOpt(server.socket, OptReuseAddr, true)
-  #setSockOpt(server.socket, OptReusePort, true)
+  setSockOpt(server.socket, OptReuseAddr, true)
+  setSockOpt(server.socket, OptReusePort, true)
   
   server.socket.bindAddr(Port(conf.port),conf.address)
   server.socket.listen()
-  echo("Server initialised!")
+  echo("Server started on " & conf.address & ":" & $conf.port)
+
+  if (conf.hasReplica):
+    replicationChannel.open()
+    var t: Thread[tuple[host: string, port: int]]
+    createThread(t, replicationThread, (conf.replicationAddress, conf.replicationPort.int))
 
   var clients: seq[tuple[socket: Socket, clientId: int]] = @[]
   while true:
@@ -972,11 +1011,13 @@ proc serve*(conf:Config) =
 
     var client:Socket = nil
     if DEBUG:
-      processClient(server.socket)
+      processClient(server.socket, conf)
     else:
       #TODO why parallel work not parallel?
-      parallel:
-        spawn processClient(server.socket)
+      let client = acceptconn(server.socket)
+      if client != nil:
+        #parallel:
+        spawn processClient(client, conf)
 
   #die
   echo "die server"
