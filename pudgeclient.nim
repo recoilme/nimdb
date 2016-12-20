@@ -42,7 +42,7 @@ proc createSocket*():Socket =
 proc newClient*(host: string = "127.0.0.1", port: int = 11213): Socket =
   result = createSocket()
   try:
-    result.connect("127.0.0.1", Port(port))
+    result.connect(host, Port(port))
     #setSockOpt(result, OptReuseAddr, true)
     #setSockOpt(result, OptReusePort, true)
   except:
@@ -67,7 +67,7 @@ proc setNoreply*(socket: Socket, key:string, val:string):int =
   var message = "set " & key & " 0 0 " & $val.len & " noreply" & NL & val & NL
   return socket.send(message.cstring, message.len)
 
-proc delete*(socket: Socket, key: string): bool = 
+proc delete*(socket: Socket, key: string): bool =
   ##
   ## .. code-block:: Nim
   ##
@@ -79,7 +79,7 @@ proc delete*(socket: Socket, key: string): bool =
   socket.send("delete " & key & NL)
   return socket.recvLine() == "DELETED"
 
-proc deleteNoreply*(socket: Socket, key: string, noreply: bool = false): int = 
+proc deleteNoreply*(socket: Socket, key: string, noreply: bool = false): int =
   var message = "delete " & key & " noreply" & NL
   return socket.send(message.cstring, message.len)
 
