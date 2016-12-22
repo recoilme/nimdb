@@ -426,7 +426,7 @@ proc processDelete(client: Socket, config: Config, params: seq[string]): void =
         else:
           sendStatus(client, Status.error)
 
-proc processStat( client: Socket):void =
+proc processStat( client: Socket, asGetResponse: bool = false):void =
   ## example stat
   var msg = ""
   var len:int
@@ -459,6 +459,8 @@ proc processStat( client: Socket):void =
 
         o = cursor.get(o)
       discard destroy(cursor)
+      if asGetResponse:
+        msg = $Status.value & " status 0 " & $(msg.len - NL.len) & NL & msg & GET_CMD_ENDING
       client.sendString(msg)
     else:
       if client != nil:
@@ -705,6 +707,8 @@ proc parseLine(client: Socket, config: Config, line: string):bool =
     of $Cmd.cmdGet:
       if params.len > 1 and params[1].contains('*'):
         processKeyValues(client, params)
+      elif params.len == 2 and params[1] == "status":
+        processStat(client, true)  
       else:
         processGet(client,params)
     of $Cmd.cmdDelete:
