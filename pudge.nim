@@ -59,7 +59,8 @@ import
   pudgeclient,
   parseopt,
   sequtils,
-  sharedlist
+  sharedlist,
+  cacheimpl
 
 {.experimental.}
 
@@ -145,6 +146,7 @@ var glock: Lock
 var die : bool# global var?
 var gclientscounter {.guard: glock.}: int
 var replicationChannel: TChannel[RepMsg]
+var cache: Cache
 
 #contants
 const NL = chr(13) & chr(10)
@@ -155,6 +157,8 @@ const GET_CMD_ENDING = $Status.theEnd & NL
 var env : pointer
 var db : pointer
 var L: Lock
+
+proc strlen(s: cstring): cint {.importc: "strlen", header: "<string.h>".}
 
 proc processSubscribers( process: proc(s: Socket): int) =
   let dummy=0
@@ -335,14 +339,26 @@ proc processGet(client: Socket,params: seq[string]):void=
               buffer = resize(buffer, bufferLen)
 
       of Engine.engSophia:
-        var t = env.begin
-        var o = document(db)
-        discard o.setstring("key".cstring, addr key[0], (key.len).cint)
-        o = t.get(o)
-        if (o != nil):
-          var size:cint = 0
-          var valPointer = cast[ptr array[0,char]](o.getstring("value".cstring, addr size))
+        var valPointer: ptr cstring
+        var hasValue = false
+        var size:cint = 0
+        var o: pointer = nil
+        var t: pointer = nil
+        if cache.get(key, valPointer):
+          hasValue = true
+          size = strlen(valPointer)
+          valPointer = cast[ptr cstring](valPointer[]) # KLUDGE
+        else:
+          t = env.begin
+          o = document(db)
+          discard o.setstring("key".cstring, addr key[0], (key.len).cint)
+          o = t.get(o)
+          if (o != nil):
+            valPointer = cast[ptr cstring](o.getstring("value".cstring, addr size))
+            cache.add(key, valPointer, size)
+            hasValue = true
 
+        if hasValue:     
           let diff = (size + key.len + 20) - (bufferLen - bufferPos)
           if diff > 0:
             bufferLen = max(bufferLen * 2, bufferLen + diff)
@@ -358,8 +374,10 @@ proc processGet(client: Socket,params: seq[string]):void=
           copyMem(addr buffer[bufferPos], NL.cstring, NL.len)
           bufferPos += NL.len
 
+        if not o.isNil:
           discard destroy(o)
-        discard t.commit
+        if not t.isNil:
+          discard t.commit
 
   let diff = GET_CMD_ENDING.len - (bufferLen - bufferPos)
   if diff > 0:
@@ -997,6 +1015,8 @@ proc serve*(conf:Config) =
   server.socket = createSocket()
   setSockOpt(server.socket, OptReuseAddr, true)
   setSockOpt(server.socket, OptReusePort, true)
+
+  cache = createCache()
   
   server.socket.bindAddr(Port(conf.port),conf.address)
   server.socket.listen()
