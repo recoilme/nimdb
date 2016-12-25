@@ -134,6 +134,7 @@ type
 
 # vars
 var DEBUG : bool
+var useMemCache: bool = true
 var keyMaxSize: int = 30
 var valueMaxSize: int = 2000
 var cmdGetBatchSize: int = 1000
@@ -344,7 +345,7 @@ proc processGet(client: Socket,params: seq[string]):void=
         var size:cint = 0
         var o: pointer = nil
         var t: pointer = nil
-        if cache.get(key, valPointer):
+        if useMemCache and cache.get(key, valPointer):
           hasValue = true
           size = strlen(valPointer)
           valPointer = cast[ptr cstring](valPointer[]) # KLUDGE
@@ -355,7 +356,8 @@ proc processGet(client: Socket,params: seq[string]):void=
           o = t.get(o)
           if (o != nil):
             valPointer = cast[ptr cstring](o.getstring("value".cstring, addr size))
-            cache.add(key, valPointer, size)
+            if useMemCache:
+              cache.add(key, valPointer, size)
             hasValue = true
 
         if hasValue:     
@@ -1016,7 +1018,8 @@ proc serve*(conf:Config) =
   setSockOpt(server.socket, OptReuseAddr, true)
   setSockOpt(server.socket, OptReusePort, true)
 
-  cache = createCache()
+  if useMemCache:
+    cache = createCache()
   
   server.socket.bindAddr(Port(conf.port),conf.address)
   server.socket.listen()
