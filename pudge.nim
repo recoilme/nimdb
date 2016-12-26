@@ -60,7 +60,7 @@ import
   parseopt,
   sequtils,
   sharedlist,
-  cacheimpl
+  cache2/cacheimpl2
 
 {.experimental.}
 
@@ -345,7 +345,7 @@ proc processGet(client: Socket,params: seq[string]):void=
         var size:cint = 0
         var o: pointer = nil
         var t: pointer = nil
-        if useMemCache and cache.get(key, valPointer):
+        if useMemCache and cache.get(key.cstring, valPointer):
           hasValue = true
           size = strlen(valPointer)
           valPointer = cast[ptr cstring](valPointer[]) # KLUDGE
@@ -357,7 +357,7 @@ proc processGet(client: Socket,params: seq[string]):void=
           if (o != nil):
             valPointer = cast[ptr cstring](o.getstring("value".cstring, addr size))
             if useMemCache:
-              cache.add(key, valPointer, size)
+              cache.set(key.cstring, valPointer, size)
             hasValue = true
 
         if hasValue:     
@@ -1019,7 +1019,7 @@ proc serve*(conf:Config) =
   setSockOpt(server.socket, OptReusePort, true)
 
   if useMemCache:
-    cache = createCache()
+    cache = create_cache()
   
   server.socket.bindAddr(Port(conf.port),conf.address)
   server.socket.listen()

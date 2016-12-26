@@ -19,6 +19,7 @@ Build from source:
 ```
 git clone https://github.com/recoilme/pudge.git
 nimble install yaml
+cd cache2 && ./compile.sh && cd ..
 nim c pudge.nim
 ```
 Start with the custom configuration:
