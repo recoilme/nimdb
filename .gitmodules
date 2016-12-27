@@ -1,0 +1,3 @@
+[submodule "memcachelib"]
+	path = memcachelib
+	url = https://github.com/recoilme/memcachelib.git

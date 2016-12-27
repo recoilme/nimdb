@@ -60,7 +60,7 @@ import
   parseopt,
   sequtils,
   sharedlist,
-  cache2/cacheimpl2
+  memcachelib
 
 {.experimental.}
 
@@ -344,11 +344,16 @@ proc processGet(client: Socket,params: seq[string]):void=
         var hasValue = false
         var size:cint = 0
         var o: pointer = nil
-        var t: pointer = nil
-        if useMemCache and cache.get(key.cstring, valPointer):
+        var t: pointer = nil 
+        var sc: cstring
+        valPointer = sc.addr
+        if useMemCache and cache.get(key.cstring, valPointer) > 0:
+          if valPointer.isNil:
+            echo "valPointer is null"
           hasValue = true
           size = strlen(valPointer)
           valPointer = cast[ptr cstring](valPointer[]) # KLUDGE
+          echo "From memcache"
         else:
           t = env.begin
           o = document(db)
@@ -356,8 +361,12 @@ proc processGet(client: Socket,params: seq[string]):void=
           o = t.get(o)
           if (o != nil):
             valPointer = cast[ptr cstring](o.getstring("value".cstring, addr size))
+            var s = create(char, size)
+            copyMem(s, valPointer, size)
+            var sc = s.cstring
             if useMemCache:
-              cache.set(key.cstring, valPointer, size)
+              var v = cache.set(key.cstring, sc.addr, size)
+              echo "Set result status = " & $v
             hasValue = true
 
         if hasValue:     
@@ -1019,7 +1028,7 @@ proc serve*(conf:Config) =
   setSockOpt(server.socket, OptReusePort, true)
 
   if useMemCache:
-    cache = create_cache()
+    cache = create_cache(1024)
   
   server.socket.bindAddr(Port(conf.port),conf.address)
   server.socket.listen()
