@@ -1,6 +1,6 @@
 [Package]
 name          = "Pudge"
-version       = "0.1.1"
+version       = "0.2"
 author        = "Kulibaba Vadim"
 description   = "Pudge Db - it's modern key/value storage with memcached protocol support."
 license       = "MIT"
