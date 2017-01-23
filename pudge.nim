@@ -995,8 +995,8 @@ proc serve*(conf:Config) =
 
   var server = newServer()# global var?
   server.socket = createSocket()
-  setSockOpt(server.socket, OptReuseAddr, true)
-  setSockOpt(server.socket, OptReusePort, true)
+  #setSockOpt(server.socket, OptReuseAddr, true)
+  #setSockOpt(server.socket, OptReusePort, true)
   
   server.socket.bindAddr(Port(conf.port),conf.address)
   server.socket.listen()
