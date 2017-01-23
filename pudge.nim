@@ -47,7 +47,7 @@ import
   net,
   strutils,
   tables,
-  sophia,
+  sophia.src/sophia,
   times,
   os,
   yaml,
@@ -986,7 +986,7 @@ proc replicationThread(replicaAddr: tuple[host: string, port: int]): void =
 proc serve*(conf:Config) =
   ## run server with Config
   initVars(conf)
-  setMaxPoolSize(200)
+  #setMaxPoolSize(200)
   var replicationAddressCopy = conf.replicationAddress
   replicationAddress = replicationAddressCopy.addr
 

@@ -1,11 +1,10 @@
-
 {
-  "address": "127.0.0.1",
+  "address": "0.0.0.0",
   "port": 11213,
   "debug": false,
   "expectation" : {
-    "keyMaxSize": 30,
-    "valueMaxSize": 2000,
+    "keyMaxSize": 255,
+    "valueMaxSize": 4096,
     "cmdGetBatchSize": 1000
   },
   "replicationAddress": "",
