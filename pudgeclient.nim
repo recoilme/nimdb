@@ -28,9 +28,16 @@
 ##   echo client.get("key")
 ##   client.quit()
 ##
+## New command for reading cursor:
+## .. code-block:: Nim
+##   res = socket.getWithCursor(
+##     "221:1701191301", 
+##     100500, 
+##     proc(key,value: string): bool = match(value, re".+true$") and match(value, re"^SCR")
+##   )
 ## see test.nim
 
-import net, strutils
+import net, re, strutils
 
 const NL = chr(13) & chr(10)
 
@@ -111,6 +118,34 @@ proc get*(socket: Socket, key:string):string  =
       result = $data
       break
   return result
+
+proc getWithCursor*(
+  socket: Socket,
+  prefix: string,
+  limit: int  = 1,
+  processor: proc(key, value: string): bool = proc(x,y: string): bool = true
+): seq[tuple[key: string, value: string]] =
+  result = newSeq[tuple[key: string, value: string]]()
+  let  request = "?type=cursor&prefix=" & prefix & "&limit=" & $limit
+  var
+    counter = 0
+    tmp = newSeq[string]()
+    line = ""
+  socket.send("get " & request & NL)
+  while line != "END":
+    line = socket.recvLine()
+    inc(counter)
+    if  counter mod 2 == 0:
+      tmp.add(line)
+      if tmp.len == 2:
+        if processor(tmp[0],tmp[1]):
+          let item: tuple[key: string, value: string] = (tmp[0], tmp[1])
+          result.add(item)
+      tmp = newSeq[string]()
+    else:
+      let pieces = line.split(" ")
+      if pieces.len == 4:
+        tmp.add(pieces[1])
 
 proc quit*(socket: Socket) =
   ## close current session
